@@ -172,6 +172,32 @@ describe('found in review', () => {
     expect(api.doc.exWeights['c-dip']).toEqual({ w: 20, d: '2026-10-01' })
   })
 
+  test("a 409 after another device switched a dumbbell default keeps the meaning first read", async () => {
+    api.doc = { ...DOC(), dbLoad: { '0289': { mode: 'each', _ts: 1 } } }
+    api.script.put = [(send, s) => {
+      s.doc = { ...s.doc, dbLoad: { '0289': { mode: 'total', _ts: 2 } }, _wid: 'w-total' }
+      s.rev = 8
+      send(409, { error: 'conflict', rev: s.rev, state: s.doc })
+    }]
+    const r = await call({ exercises: [{ exercise: '0289', sets: [{ reps: 10, weight: 20 }] }] })
+    expect(r.logged).toBe(true)
+    const [first, second] = api.puts.map(p => p.state.workouts[0])
+    expect(second.entries[0].target.dbLoad).toBe('each')
+    expect(second.vol).toBe(first.vol)
+    expect(api.doc.dbLoad['0289'].mode).toBe('total')   // the device's new default itself is kept
+  })
+
+  test('an /api/me that does not say whose token it is stops the write', async () => {
+    const odd = http.createServer((req, res) => {
+      if (req.url === '/api/me') { res.writeHead(200, { 'content-type': 'text/html' }); return res.end('<html>') }
+      res.writeHead(500); res.end()
+    })
+    await new Promise(r => odd.listen(0, '127.0.0.1', r))
+    const err = await call(CURLS, { OPENGYM_URL: `http://127.0.0.1:${odd.address().port}`, OPENGYM_TOKEN: TOKEN }).catch(e => e)
+    odd.close()
+    expect(err).toMatchObject({ code: 'EAPI', message: expect.stringContaining('/api/me') })
+  })
+
   test('a 409 without the current profile in it is an error, not "sign in once"', async () => {
     api.script.put = [send => send(409, { error: 'conflict' })]
     await expect(call(CURLS)).rejects.toMatchObject({ code: 'EAPI', message: expect.stringContaining('409') })

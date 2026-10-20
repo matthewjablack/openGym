@@ -288,3 +288,52 @@ describe('found in review', () => {
     expect(r.problems[0].problem).toMatch(/cardio/)
   })
 })
+
+describe('found in review, round 2', () => {
+  it("today with a start and no length is the backfill's hour, not start-until-now", () => {
+    const w = build(profile(), curls({ start: '09:00' })).workout
+    expect(w.end - w.start).toBe(60 * 60000)
+    // and an hour that would run past now ends now
+    const late = build(profile(), curls({ start: '19:00' })).workout
+    expect(late.end).toBe(NOW)
+  })
+
+  it('"just did" after a session logged in the app this past hour is filed after it, as a live finish', () => {
+    const app = { ...bench(TODAY, 100), id: 'w-app', start: new Date(`${TODAY}T18:00:00`).getTime(), end: new Date(`${TODAY}T19:10:00`).getTime(), entries: [{ id: '0025', sets: [{ w: 100, r: 5, done: true }], topW: 100, target: null }] }
+    const S = profile({ workouts: [app], exWeights: { '0294': { w: 10, d: '2026-10-13' } } })
+    const built = build(S, curls())
+    expect(built.workout.start).toBeGreaterThanOrEqual(app.end)
+    const r = appendLoggedWorkout(S, built, { now: NOW })
+    expect(S.workouts.map(w => w.id)).toEqual(['w-app', r.workout.id])
+    expect(S.exWeights['0294']).toEqual({ w: 12, d: TODAY })
+    expect(r.workout._ts).toBeUndefined()
+  })
+
+  it('just after midnight, the default hour does not start yesterday', () => {
+    const at = new Date(`${TODAY}T00:30:00`).getTime()
+    const w = buildLoggedWorkout(profile(), curls(), { now: at }).workout
+    expect(w.start).toBe(new Date(`${TODAY}T00:00:00`).getTime())
+    expect(w.d).toBe(TODAY)
+  })
+
+  it('a key every object has is no exercise', () => {
+    for (const name of ['constructor', 'toString', '__proto__', 'hasOwnProperty']) {
+      const r = build(profile(), { date: TODAY, exercises: [{ exercise: name, sets: [{ reps: 8, weight: 20 }] }] })
+      expect(r.workout, name).toBeUndefined()
+    }
+  })
+
+  it('a name nothing is close to says so, even with suggestions', () => {
+    const r = build(profile(), { date: TODAY, exercises: [{ exercise: 'zercher frobnicate', sets: [{ reps: 5 }] }] })
+    expect(r.problems[0].problem).toMatch(/^no exercise in the library matches/)
+  })
+
+  it('the meaning fixed for a request wins over a default changed since', () => {
+    const S = profile({ dbLoad: { '0289': { mode: 'total', _ts: 2 } } })
+    const w = buildLoggedWorkout(S, { date: TODAY, exercises: [{ exercise: '0289', sets: [{ reps: 10, weight: 20 }] }] }, { now: NOW, meanings: { '0289': 'each' } }).workout
+    expect(w.entries[0].target.dbLoad).toBe('each')
+    expect(w.vol).toBe(400)
+    const asIs = buildLoggedWorkout(S, { date: TODAY, exercises: [{ exercise: '0289', sets: [{ reps: 10, weight: 20 }] }] }, { now: NOW, meanings: { '0289': 'as' } }).workout
+    expect(asIs.entries[0].target.dbLoad).toBeUndefined()
+  })
+})

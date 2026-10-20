@@ -49,17 +49,20 @@ export function resolveExercise(S, ref) {
   const customs = (S.customEx || []).filter(c => c && c.id)
   const own = customs.find(c => c.id === text)
   if (own) return { id: own.id, name: own.n, custom: true }
+  // Own keys only: `constructor` or `__proto__` is on every object and names no exercise.
   const canon = canonicalExId(text)
-  if (EXIDX[canon] && EXIDX[text]) return { id: canon, name: EXIDX[canon].n }
+  if (Object.hasOwn(EXIDX, text) && Object.hasOwn(EXIDX, canon)) return { id: canon, name: EXIDX[canon].n }
   const named = customs.filter(c => nameKey(c.n) === nameKey(text))
   if (named.length === 1) return { id: named[0].id, name: named[0].n, custom: true }
   if (named.length > 1) {
     return { problem: 'several of your own exercises have this name; pass one id', candidates: named.map(c => ({ id: c.id, name: c.n })) }
   }
-  const { id, candidates } = exerciseCandidates(text)
+  const { id, candidates, kind } = exerciseCandidates(text)
   if (id && EXIDX[id]) return { id, name: EXIDX[id].n }
   return {
-    problem: candidates.length ? 'more than one exercise matches; pass one id' : 'no exercise in the library matches',
+    problem: kind === 'none' || !candidates.length
+      ? 'no exercise in the library matches' + (candidates.length ? '; these only share a word with it' : '')
+      : 'more than one exercise matches; pass one id',
     candidates: candidates.filter(c => EXIDX[c]).map(candidateOf),
   }
 }
@@ -100,11 +103,12 @@ function rowOf(set, mode, toProfile) {
  * Returns { workout, past, customEx, resolved } or { problems }: every problem in the whole
  * description at once, so one round trip to the user settles them all.
  *
- * `unit` is what a description without its own unit is read in. The caller fixes it once per
- * request (the profile's, when it first read the profile): another device switching kg ↔ lb
- * between two attempts must not turn the same 100 into pounds.
+ * `unit` is what a description without its own unit is read in, and `meanings` what each
+ * dumbbell weight means (exercise id → 'as' | 'each' | 'total'). The caller fixes both once per
+ * request, from the profile as it first read it: another device switching kg ↔ lb, or a
+ * dumbbell default from each to total, between two attempts must not change what the same 20 is.
  */
-export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackUnit } = {}) {
+export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackUnit, meanings } = {}) {
   const problems = []
   const today = localIso(now)
   const date = input?.date
@@ -180,7 +184,9 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
     })
     // The meaning of a dumbbell weight is stamped the way a freestyle entry gets it (sheets.jsx
     // swapActiveWorkoutExercise): the exercise's own default, so "20 each" stays 20 each.
-    const target = withMeaning(S, mode === 'time' ? { id: hit.id, mode: 'time' } : { id: hit.id }, hit.id)
+    const cfg = mode === 'time' ? { id: hit.id, mode: 'time' } : { id: hit.id }
+    const fixed = meanings && Object.hasOwn(meanings, hit.id) ? meanings[hit.id] : null
+    const target = fixed === 'each' || fixed === 'total' ? { ...cfg, dbLoad: fixed } : fixed === 'as' ? cfg : withMeaning(S, cfg, hit.id)
     const note = String(ex.note ?? '').trim().slice(0, 280)
     entries.push({ id: hit.id, sets: rows, target, ...(note ? { note } : {}) })
     resolved.push({ input: ex.exercise, id: hit.id, name: hit.name, mode, ...(target.dbLoad ? { weightMeans: target.dbLoad } : {}), ...(hit.created ? { created: true } : {}) })
@@ -188,19 +194,23 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
   if (problems.length) return { problems }
 
   const past = date < today
-  // Today without a start time: it ended now, which is when people say "just did", and lasted the
-  // backfill's hour unless they said otherwise. Into the past without one: the backfill's 18:00
-  // and hour (backfill.js), as when it is logged in the app.
+  // A length nobody gave is the backfill's hour (backfill.js), as when a session is logged in the
+  // app. Into the past without a start: the backfill's 18:00. Today without one it is a live
+  // finish — "just did" — so it ended now and is filed after anything already logged today: its
+  // start is held to no earlier than today's last session ended, and no earlier than midnight.
   let start, end
+  const live = !past && input.start == null
   if (input.start != null) {
     start = new Date(`${date}T${input.start}:00`).getTime()
-    end = dur != null ? start + dur * 60000 : past ? start + 60 * 60000 : Math.max(start, now)
+    end = start + (dur ?? 60) * 60000
+    if (dur == null && !past) end = Math.max(start, Math.min(end, now))
   } else if (past) {
     start = backfillStart(date)
     end = start + (dur ?? 60) * 60000
   } else {
     end = now
-    start = end - (dur ?? 60) * 60000
+    const lastEnd = Math.max(0, ...(S.workouts || []).filter(w => w?.d === date).map(w => Number(w.end) || Number(w.start) || 0))
+    start = Math.min(end, Math.max(end - (dur ?? 60) * 60000, lastEnd, new Date(date + 'T00:00:00').getTime()))
   }
   if (start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }
   // As the app's own backfill refuses one (sheets.jsx endsInFuture): a finished session that has
@@ -228,7 +238,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
   // finish-workout's whitelist keeps `target`, which a timed hold and a dumbbell meaning need to
   // read back; volume as Finish stores it (warm-ups out, "each" counted per bell).
   workout.vol = workoutVolume(workout)
-  return { workout, past, customEx, resolved }
+  return { workout, past, live, customEx, resolved }
 }
 
 const sameEntries = (a, b) =>
@@ -267,7 +277,7 @@ export function appendLoggedWorkout(S, built, { now = Date.now(), allowDuplicate
   // already in — it is a backfill: a badge it leads with, and one it falsifies on a later session
   // taken away, which the live-finish rule below would leave standing.
   const later = S.workouts.some(x => x && (x.d > w.d || (x.d === w.d && (Number(x.start) || 0) > w.start)))
-  if (built.past || later) {
+  if (built.past || (later && !built.live)) {
     stampWorkout(w, now)
     const touched = [...new Set(w.entries.map(e => e.id))]
     S.workouts = rebuildPrHistory(insertChronological(S.workouts, w), touched, w)

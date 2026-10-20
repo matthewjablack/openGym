@@ -130,8 +130,10 @@ export const logWorkout = {
 
     const me = await apiFetch(cfg, '/api/me', opts)
     const uid = me.body?.user?.id
+    // A guard that cannot read whose token this is refuses rather than steps aside.
+    if (typeof uid !== 'string' || !uid) throw fail('EAPI', 'the openGym server did not say which profile OPENGYM_TOKEN belongs to (GET /api/me); nothing was saved')
     const local = localUid()
-    if (local && uid && local !== uid) {
+    if (local && local !== uid) {
       // The ids go to the operator on stderr, not into the model's context (state.js ambiguousUid).
       console.error(`[opengym-mcp] OPENGYM_TOKEN is for profile ${uid}, this server reads ${local}`)
       throw fail('EPROFILE', 'OPENGYM_TOKEN belongs to another profile than the one this server reads: pair again from the right profile, or set OPENGYM_UID to match (the ids are on the server\'s stderr)')
@@ -140,7 +142,7 @@ export const logWorkout = {
     let got = await apiFetch(cfg, '/api/data', opts)
     // A description without a unit is in the profile's, as the profile was when first read: a
     // retry after another device switched kg ↔ lb reads the same numbers the same way.
-    let unit = null
+    let unit = null, meanings = null
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const doc = got.body?.state
       if (!doc || typeof doc !== 'object') {
@@ -152,10 +154,12 @@ export const logWorkout = {
       unit = unit || (S.unit === 'lb' ? 'lb' : 'kg')
       // The profile's own exercises indexed for the build, as the app has them: a custom one-arm
       // dumbbell press counts one bell, a custom assisted machine folds towards less help.
-      const built = withCustomsIndexed(S, () => buildLoggedWorkout(S, input, { now, unit }))
+      const built = withCustomsIndexed(S, () => buildLoggedWorkout(S, input, { now, unit, meanings }))
       if (built.problems) {
         return { logged: false, problems: built.problems, next: 'Nothing was saved. Settle these with the user (pick a candidate id, fix a set) and call again.' }
       }
+      // What each dumbbell weight meant on the first read stays what it means on a retry.
+      meanings = meanings || Object.fromEntries(built.workout.entries.map(e => [e.id, e.target?.dbLoad || 'as']))
       const preview = viewOf(built.workout, S, built)
       if (params.dry_run) {
         const dup = findDuplicate(S, built.workout)

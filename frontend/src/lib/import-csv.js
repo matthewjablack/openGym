@@ -285,7 +285,8 @@ export function matchExercise(name) {
  * worth a custom exercise the user can fix later, and the first of two same-named entries is as
  * good as the other. Logging one session by name has no such fallback, so here an exact name the
  * catalogue spells twice ("lever chest press" is 0576 and 0577) is a question, not an answer.
- * With nothing close, the entries sharing the most words are offered instead.
+ * With nothing close, the entries sharing the most words are offered instead. `kind` says which
+ * step answered: 'alias', 'exact', 'near', or 'none' (nothing close; the candidates only share a word).
  */
 export function exerciseCandidates(name, limit = 5) {
   const idx = buildIndex()
@@ -293,11 +294,11 @@ export function exerciseCandidates(name, limit = 5) {
   if (!w.length) return { id: null, candidates: [] }
   const sorted = w.slice().sort().join(' ')
   const aliased = aliasIndex().get(sorted)
-  if (aliased && EXIDX[aliased]) return { id: canonicalExId(aliased), candidates: [] }
+  if (aliased && EXIDX[aliased]) return { id: canonicalExId(aliased), candidates: [], kind: 'alias' }
   const uniq = ids => [...new Set(ids.map(canonicalExId))]
   const exact = uniq(idx.all.filter(c => c.k === sorted).map(c => c.id))
-  if (exact.length === 1) return { id: exact[0], candidates: [] }
-  if (exact.length > 1) return { id: null, candidates: exact.slice(0, limit) }
+  if (exact.length === 1) return { id: exact[0], candidates: [], kind: 'exact' }
+  if (exact.length > 1) return { id: null, candidates: exact.slice(0, limit), kind: 'exact' }
   const q = new Set(w)
   const near = []
   for (const c of idx.all) {
@@ -307,13 +308,14 @@ export function exerciseCandidates(name, limit = 5) {
   }
   near.sort((a, b) => a.n - b.n)
   const closest = uniq(near.filter(c => c.n === near[0]?.n).map(c => c.id))
-  if (closest.length === 1) return { id: closest[0], candidates: [] }
-  if (near.length) return { id: null, candidates: uniq(near.map(c => c.id)).slice(0, limit) }
+  if (closest.length === 1) return { id: closest[0], candidates: [], kind: 'near' }
+  if (near.length) return { id: null, candidates: uniq(near.map(c => c.id)).slice(0, limit), kind: 'near' }
   const shared = idx.all
     .map(c => ({ id: c.id, hits: w.filter(word => c.set.has(word)).length, n: c.n }))
     .filter(c => c.hits > 0)
     .sort((a, b) => b.hits - a.hits || a.n - b.n)
-  return { id: null, candidates: uniq(shared.map(c => c.id)).slice(0, limit) }
+  // `kind: 'none'`: these only share a word with the name, and are offered as such.
+  return { id: null, candidates: uniq(shared.map(c => c.id)).slice(0, limit), kind: 'none' }
 }
 
 /**
