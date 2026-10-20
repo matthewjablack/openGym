@@ -56,7 +56,8 @@ describe('log_workout writes through the server', () => {
     expect(r.date).toBe(today())
     expect(r.exercises[0]).toMatchObject({ id: '0294', you_said: 'dumbbell curl' })
     expect(r.exercises[0].sets).toHaveLength(3)
-    expect(r.exercises[0].sets[2]).toMatch(/to failure/)
+    expect(r.exercises[0].sets.map(x => x.label)).toEqual(['12×12', '12×12', '12×10 F'])
+    expect(r.exercises[0].sets[2]).toMatchObject({ weight: 12, reps: 10, failure: true })
     expect(api.puts).toHaveLength(1)
     const put = api.puts[0]
     expect(put).toMatchObject({ baseRev: 7, baseWid: 'w-abc' })
@@ -134,6 +135,61 @@ describe('log_workout writes through the server', () => {
   test('a profile with nothing synced yet is told to sign in once, not given a document of one workout', async () => {
     api.doc = null
     await expect(call(CURLS)).rejects.toMatchObject({ code: 'ENOSTATE' })
+    expect(api.puts).toHaveLength(0)
+  })
+})
+
+describe('found in review', () => {
+  beforeEach(async () => { api = await stubApi(DOC()) })
+
+  test('a 409 from a profile just switched to lb reads the same numbers in the unit first read, as the same workout', async () => {
+    api.script.put = [(send, s) => {
+      s.doc = { ...s.doc, unit: 'lb', _wid: 'w-lb' }
+      s.rev = 8
+      send(409, { error: 'conflict', rev: s.rev, state: s.doc })
+    }]
+    const r = await call({ exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 100 }] }] })
+    expect(r.logged).toBe(true)
+    const [first, second] = api.puts.map(p => p.state.workouts[0])
+    expect(first.entries[0].sets[0].w).toBe(100)
+    expect(second.entries[0].sets[0].w).toBe(220.5)
+    expect(second.id).toBe(first.id)
+  })
+
+  test("the profile's own exercises count as the app counts them: a one-arm dumbbell press logged 'each' is one bell", async () => {
+    const own = { id: 'c-oa', n: 'single arm dumbbell press', custom: true, eq: 'dumbbell', bp: 'shoulders', tg: '', desc: '' }
+    api.doc = { ...DOC(), customEx: [own], dbLoad: { 'c-oa': { mode: 'each', _ts: 1 } } }
+    const r = await call({ exercises: [{ exercise: 'c-oa', sets: [{ reps: 10, weight: 20 }] }] })
+    expect(r.logged).toBe(true)
+    expect(api.doc.workouts[0].vol).toBe(200)
+  })
+
+  test('a token pasted with a line break is refused without being repeated, before any request', async () => {
+    const err = await call(CURLS, { ...api.env, OPENGYM_TOKEN: 'abc.def\nsecret-tail' }).catch(e => e)
+    expect(err.code).toBe('ENOCONFIG')
+    expect(err.message).not.toContain('secret-tail')
+    expect(api.auth).toHaveLength(0)
+  })
+
+  test('a redirect is not followed: the profile is never replayed to where it points', async () => {
+    let followed = 0
+    const elsewhere = http.createServer((req, res) => { followed++; res.end('{}') })
+    await new Promise(r => elsewhere.listen(0, '127.0.0.1', r))
+    const to = `http://127.0.0.1:${elsewhere.address().port}`
+    const redirecting = http.createServer((req, res) => { res.writeHead(307, { location: to + req.url }); res.end() })
+    await new Promise(r => redirecting.listen(0, '127.0.0.1', r))
+    const err = await call(CURLS, { OPENGYM_URL: `http://127.0.0.1:${redirecting.address().port}`, OPENGYM_TOKEN: TOKEN }).catch(e => e)
+    redirecting.close(); elsewhere.close()
+    expect(err).toMatchObject({ code: 'EAPI', message: expect.stringContaining('redirects (307)') })
+    expect(followed).toBe(0)
+  })
+
+  test('an OPENGYM_UID that names another profile than the token is refused even when its data is not readable here', async () => {
+    api = await stubApi(DOC(), { uid: 'someone-else' })
+    process.env.OPENGYM_UID = 'expected-profile'
+    try {
+      await expect(call(CURLS)).rejects.toMatchObject({ code: 'EPROFILE' })
+    } finally { delete process.env.OPENGYM_UID }
     expect(api.puts).toHaveLength(0)
   })
 })

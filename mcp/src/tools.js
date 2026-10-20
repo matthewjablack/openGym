@@ -46,7 +46,7 @@ const exerciseOf = (id, S) => customOf(id, S) || exOr(id)
 // registers its customs) takes the larger one. It registers the profile's customs for the length
 // of one synchronous build and takes them back out in the same call: nothing else, and no other
 // profile's read, can run in between.
-function withCustomsIndexed(S, build) {
+export function withCustomsIndexed(S, build) {
   registerCustom(Array.isArray(S.customEx) ? S.customEx : [])
   try { return build() } finally { registerCustom([]) }
 }

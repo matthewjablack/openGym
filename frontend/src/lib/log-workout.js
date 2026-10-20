@@ -19,6 +19,7 @@ import { isWarmupRow } from './workout-model.js'
 import { insertChronological, backfillStart } from './backfill.js'
 import { rebuildPrHistory } from './workout-date.js'
 import { stampWorkout } from './sync-merge.js'
+import { exerciseMuscleSnapshot } from './muscles.js'
 
 const LB_TO_KG = 0.45359237
 // The importer's bounds (import-csv.js MAX_KG / MAX_REPS): nobody lifts 2 t or does 1,000 reps.
@@ -97,8 +98,12 @@ function rowOf(set, mode, toProfile) {
  *
  * Returns { workout, past, customEx, resolved } or { problems }: every problem in the whole
  * description at once, so one round trip to the user settles them all.
+ *
+ * `unit` is what a description without its own unit is read in. The caller fixes it once per
+ * request (the profile's, when it first read the profile): another device switching kg ↔ lb
+ * between two attempts must not turn the same 100 into pounds.
  */
-export function buildLoggedWorkout(S, input, { now = Date.now() } = {}) {
+export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackUnit } = {}) {
   const problems = []
   const today = localIso(now)
   const date = input?.date
@@ -109,7 +114,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now() } = {}) {
   const dur = input?.durationMin
   if (dur != null && !(num(dur) > 0 && dur <= LOG_LIMITS.maxDurationMin)) problems.push({ field: 'durationMin', problem: `must be 1–${LOG_LIMITS.maxDurationMin} minutes` })
   const profileUnit = S.unit === 'lb' ? 'lb' : 'kg'
-  const unit = input?.unit == null ? profileUnit : input.unit
+  const unit = input?.unit == null ? (fallbackUnit === 'lb' || fallbackUnit === 'kg' ? fallbackUnit : profileUnit) : input.unit
   if (unit !== 'kg' && unit !== 'lb') problems.push({ field: 'unit', problem: "must be 'kg' or 'lb'" })
   const toProfile = {
     toKg: w => (unit === 'lb' ? w * LB_TO_KG : w),
@@ -142,7 +147,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now() } = {}) {
       problems.push({ field: at + '.exercise', exercise: ex?.exercise ?? null, problem: hit.problem, ...(hit.candidates ? { candidates: hit.candidates } : {}) })
       return
     }
-    if (!hit.custom && isCardio(hit.id)) {
+    if (isCardio(hit.id) || customEx.find(c => c.id === hit.id)?.bp === 'cardio') {
       problems.push({ field: at + '.exercise', exercise: ex.exercise, problem: 'cardio (time and speed) cannot be logged this way yet' })
       return
     }
@@ -195,7 +200,10 @@ export function buildLoggedWorkout(S, input, { now = Date.now() } = {}) {
     end = now
     start = end - (dur ?? 0) * 60000
   }
-  if (!past && start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }
+  if (start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }
+  // As the app's own backfill refuses one (sheets.jsx endsInFuture): a finished session that has
+  // not finished yet would count its whole length into the stats now.
+  if (end > now) return { problems: [{ field: 'durationMin', problem: 'the session would end later than now' }] }
 
   const name = String(input.name ?? '').trim().slice(0, 80) || 'Workout'
   const note = String(input.note ?? '').trim().slice(0, 500)
@@ -203,13 +211,17 @@ export function buildLoggedWorkout(S, input, { now = Date.now() } = {}) {
   // timeout, a client retrying — names the same workout, and appendLoggedWorkout keeps one.
   // Only what the caller sent goes in, never the start filled in from `now` or a converted weight.
   const id = importId('mw', JSON.stringify([
-    date, input.start ?? null, dur ?? null, input.name ?? null, input.note ?? null, unit,
+    date, input.start ?? null, dur ?? null, input.name ?? null, input.note ?? null, input.unit ?? null,
     exercises.map(ex => [ex.exercise, ex.createCustom === true, ex.note ?? null,
       ex.sets.map(s => [s.reps ?? null, s.seconds ?? null, s.weight ?? null, s.warmup === true, s.failure === true, s.rir ?? null, s.rpe ?? null])]),
   ]))
+  // A custom exercise's muscles go with the entry, as Finish writes them: a device that deletes
+  // the exercise without ever having seen this workout would otherwise leave its sets crediting
+  // no muscle at all.
+  const customs = [...(S.customEx || []), ...customEx]
   const workout = buildCompletedWorkout(
     { id, d: date, start, name, bw: null, routineIds: [], note, entries },
-    { end, prs: [] },
+    { end, prs: [], snapshotFor: e => { const c = customs.find(x => x?.id === e.id); return c ? exerciseMuscleSnapshot(c) : null } },
   )
   // finish-workout's whitelist keeps `target`, which a timed hold and a dumbbell meaning need to
   // read back; volume as Finish stores it (warm-ups out, "each" counted per bell).
@@ -220,9 +232,18 @@ export function buildLoggedWorkout(S, input, { now = Date.now() } = {}) {
 const sameEntries = (a, b) =>
   JSON.stringify((a || []).map(e => [e.id, e.sets])) === JSON.stringify((b || []).map(e => [e.id, e.sets]))
 
-/** The workout already in `S` this one repeats: its own id, or the same day with the same sets. */
-export const findDuplicate = (S, workout) =>
-  (S.workouts || []).find(w => w && (w.id === workout.id || (w.d === workout.d && sameEntries(w.entries, workout.entries)))) || null
+/**
+ * The workout already in `S` this one repeats: the same request (its id) first, else the same day
+ * with the same sets. `sameRequest` tells the two apart: a repeated request is never filed again,
+ * the same sets are when the caller says it was a second session.
+ */
+export function findDuplicate(S, workout) {
+  const list = (S.workouts || []).filter(Boolean)
+  const own = list.find(w => w.id === workout.id)
+  if (own) return { workout: own, sameRequest: true }
+  const same = list.find(w => w.d === workout.d && sameEntries(w.entries, workout.entries))
+  return same ? { workout: same, sameRequest: false } : null
+}
 
 /**
  * File a built workout into `S` (mutated): its new custom exercises, the workout in day order,
@@ -232,15 +253,19 @@ export const findDuplicate = (S, workout) =>
  */
 export function appendLoggedWorkout(S, built, { now = Date.now(), allowDuplicate = false } = {}) {
   const dup = findDuplicate(S, built.workout)
-  if (dup && (dup.id === built.workout.id || !allowDuplicate)) return { added: false, reason: 'duplicate', workout: dup }
+  // A second session with the same sets has its own id already (its start or name differs, and
+  // both are in the id), so a retry of it is caught by that id like any other.
+  if (dup && (dup.sameRequest || !allowDuplicate)) return { added: false, reason: 'duplicate', workout: dup.workout }
   const w = JSON.parse(JSON.stringify(built.workout))
-  // A same-content duplicate the caller asked for needs an id of its own to survive the merge.
-  if (dup) w.id = importId('mw', w.id + '|' + now)
   S.customEx = Array.isArray(S.customEx) ? S.customEx : []
   const known = new Set(S.customEx.map(c => c?.id))
   for (const c of built.customEx || []) if (!known.has(c.id) && w.entries.some(e => e.id === c.id)) S.customEx.push({ ...c })
   S.workouts = Array.isArray(S.workouts) ? S.workouts : []
-  if (built.past) {
+  // Filed before a session already logged — an earlier day, or this morning when tonight's is
+  // already in — it is a backfill: a badge it leads with, and one it falsifies on a later session
+  // taken away, which the live-finish rule below would leave standing.
+  const later = S.workouts.some(x => x && (x.d > w.d || (x.d === w.d && (Number(x.start) || 0) > w.start)))
+  if (built.past || later) {
     stampWorkout(w, now)
     const touched = [...new Set(w.entries.map(e => e.id))]
     S.workouts = rebuildPrHistory(insertChronological(S.workouts, w), touched, w)

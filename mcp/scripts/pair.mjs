@@ -5,9 +5,10 @@
  *
  * The code comes from the app, signed in as the profile to log into: Settings → Account →
  * "Pair the mobile app". It works once, for five minutes. What comes back is a session like
- * the phone app's: it lasts SESSION_DAYS (90 by default), "Sign out everywhere" ends it, and
- * pairing again replaces it. Only the token goes to stdout, so it can be piped or captured;
- * everything else is on stderr. */
+ * the phone app's: it lasts SESSION_DAYS (90 by default) and "Sign out everywhere" ends it.
+ * Pairing again gets a new one but does not end the old: to retire a token, sign out
+ * everywhere. Only the token goes to stdout, so it can be piped or captured; everything else is
+ * on stderr. */
 import { apiBase } from '../src/api-client.js'
 
 const [url, code] = process.argv.slice(2)
@@ -26,9 +27,15 @@ try {
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify({ code }),
     signal: AbortSignal.timeout(15000),
+    // The code is a credential: a redirect would replay it to wherever it points.
+    redirect: 'manual',
   })
 } catch (e) {
-  console.error(`could not reach ${base}: ${e?.cause?.code || e.message}`)
+  console.error(`could not reach ${base}: ${e?.cause?.code || e?.name || 'network error'}`)
+  process.exit(1)
+}
+if (res.status >= 300 && res.status < 400) {
+  console.error(`${base} redirects (${res.status}): use the https address openGym is actually served at`)
   process.exit(1)
 }
 const data = await res.json().catch(() => null)

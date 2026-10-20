@@ -11,6 +11,9 @@
    passkeys make too — and it is never put into a result or an error message. */
 
 const LOOPBACK = new Set(['localhost', '127.0.0.1', '[::1]', '::1'])
+// What a session token is made of (api/server.js makeSession: `uid:exp:ver` and a base64url MAC).
+// Checked before it goes into a header, because the header check's own error quotes the value.
+const TOKEN_CHARS = /^[A-Za-z0-9._:~+/=-]+$/
 const TIMEOUT_MS = 15000
 
 function fail(code, message, extra) {
@@ -40,6 +43,9 @@ export function apiConfig(env = process.env) {
   if (!url || !token) {
     throw fail('ENOCONFIG', 'logging workouts writes through your openGym server: set OPENGYM_URL and OPENGYM_TOKEN in this MCP server\'s config (mcp/README.md, "Logging workouts")')
   }
+  if (!TOKEN_CHARS.test(token)) {
+    throw fail('ENOCONFIG', 'OPENGYM_TOKEN has characters a token never has (a line break or space from copying it?): paste it again as one line')
+  }
   return { base: apiBase(url), token }
 }
 
@@ -55,10 +61,17 @@ export async function apiFetch(cfg, path, { method = 'GET', body, timeoutMs = TI
       headers: { authorization: 'Bearer ' + cfg.token, ...(body !== undefined ? { 'content-type': 'application/json' } : {}) },
       body: body !== undefined ? JSON.stringify(body) : undefined,
       signal: AbortSignal.timeout(timeoutMs),
+      // Never followed: a redirect to http:// or to another host would replay the profile (or,
+      // pairing, the code) there, whatever OPENGYM_URL promised.
+      redirect: 'manual',
     })
   } catch (e) {
-    const why = e?.name === 'TimeoutError' ? `no answer within ${timeoutMs / 1000} s` : (e?.cause?.code || e?.message || 'network error')
+    // Only a code or a name, never the exception's text: some of them quote what was sent.
+    const why = e?.name === 'TimeoutError' ? `no answer within ${timeoutMs / 1000} s` : (e?.cause?.code || e?.name || 'network error')
     throw fail('EAPI', `could not reach the openGym server at ${cfg.base} (${why})`)
+  }
+  if (res.status >= 300 && res.status < 400) {
+    throw fail('EAPI', `the openGym server at ${cfg.base} redirects (${res.status}); set OPENGYM_URL to the https address openGym is actually served at`, { status: res.status })
   }
   let data = null
   try { data = await res.json() } catch { /* an HTML error page from a proxy: the status says enough */ }

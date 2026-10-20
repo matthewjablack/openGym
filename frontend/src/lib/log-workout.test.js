@@ -235,3 +235,50 @@ describe('what a device does with it on its next sync', () => {
     expect(merged.workouts.map(w => w.entries[0].id)).toEqual(['0294'])
   })
 })
+
+describe('found in review', () => {
+  it('a description without a unit is read in the unit the caller fixed, and its id does not depend on the profile', () => {
+    const input = { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 100 }] }] }
+    const kg = buildLoggedWorkout(profile(), input, { now: NOW, unit: 'kg' })
+    const nowLb = buildLoggedWorkout(profile({ unit: 'lb' }), input, { now: NOW, unit: 'kg' })
+    expect(nowLb.workout.entries[0].sets[0].w).toBe(220.5)
+    expect(nowLb.workout.id).toBe(kg.workout.id)
+    expect(build(profile({ unit: 'lb' }), input).workout.id).toBe(kg.workout.id)
+  })
+
+  it('a second session with the same sets, allowed once, is not logged a third time by a retry', () => {
+    const S = profile()
+    appendLoggedWorkout(S, build(S, curls({ start: '08:00', durationMin: 30 })), { now: NOW })
+    const second = curls({ start: '17:00', durationMin: 30, name: 'Evening' })
+    expect(appendLoggedWorkout(S, build(S, second), { now: NOW, allowDuplicate: true }).added).toBe(true)
+    const retry = appendLoggedWorkout(S, build(S, second, NOW + 60000), { now: NOW + 60000, allowDuplicate: true })
+    expect(retry).toMatchObject({ added: false, reason: 'duplicate' })
+    expect(S.workouts).toHaveLength(2)
+  })
+
+  it("this morning's session logged after tonight's takes tonight's badge away, as a backfill does", () => {
+    const evening = { ...bench(TODAY, 100, ['0025']), start: new Date(`${TODAY}T18:00:00`).getTime(), end: new Date(`${TODAY}T19:00:00`).getTime() }
+    const S = profile({ workouts: [evening], exWeights: { '0025': { w: 100, d: TODAY } } })
+    const r = appendLoggedWorkout(S, build(S, { date: TODAY, start: '10:00', durationMin: 60, exercises: [{ exercise: '0025', sets: [{ reps: 3, weight: 110 }] }] }), { now: NOW })
+    expect(S.workouts.map(w => w.id)).toEqual([r.workout.id, evening.id])
+    expect(r.workout.prs).toEqual(['0025'])
+    expect(S.workouts[1].prs).toEqual([])
+  })
+
+  it('a session that would end later than now is refused, today or from yesterday', () => {
+    expect(build(profile(), curls({ start: '19:00', durationMin: 120 })).problems[0].field).toBe('durationMin')
+    expect(build(profile(), curls({ date: '2026-10-19', start: '23:00', durationMin: 24 * 60 })).problems[0].field).toBe('durationMin')
+  })
+
+  it("a custom exercise's muscles ride on the entry, so a device deleting it unseen leaves the sets their credit", () => {
+    const own = { id: 'c1', n: 'Landmine press thing', custom: true, eq: 'custom', bp: 'chest', tg: '', desc: '' }
+    const w = build(profile({ customEx: [own] }), { date: TODAY, exercises: [{ exercise: 'c1', sets: [{ reps: 8, weight: 20 }] }] }).workout
+    expect(w.entries[0].muscleSnapshot).toBeTruthy()
+    expect(build(profile(), { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 5 }] }] }).workout.entries[0].muscleSnapshot).toBeUndefined()
+  })
+
+  it('a new custom exercise filed under cardio is refused like built-in cardio', () => {
+    const r = build(profile(), { date: TODAY, exercises: [{ exercise: 'Frobnicator', createCustom: true, bodyPart: 'cardio', sets: [{ reps: 8 }] }] })
+    expect(r.problems[0].problem).toMatch(/cardio/)
+  })
+})

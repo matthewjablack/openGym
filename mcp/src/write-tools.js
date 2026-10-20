@@ -8,7 +8,7 @@
    What the lib will not guess at — a name the library spells twice, an exercise the user has not
    made yet — comes back as `problems` with candidates, for the LLM to put to the user. */
 import { z } from 'zod'
-import { isoDate, entryView } from './tools.js'
+import { isoDate, entryView, withCustomsIndexed } from './tools.js'
 import { localUid, invalidate } from './state.js'
 import { apiConfig, apiFetch } from './api-client.js'
 import { buildLoggedWorkout, appendLoggedWorkout, findDuplicate, BODY_PARTS, LOG_LIMITS } from '../../frontend/src/lib/log-workout.js'
@@ -66,7 +66,17 @@ function viewOf(w, S, resolved) {
         ...(r?.input !== undefined && r.input !== v.name ? { you_said: r.input } : {}),
         ...(r?.created ? { new_custom_exercise: true } : {}),
         ...(r?.weightMeans ? { weight_means: r.weightMeans === 'each' ? 'per dumbbell' : 'both dumbbells together' } : {}),
-        sets: v.sets.map(s => s.label + (s.failure ? ' (to failure)' : '')),
+        // The numbers spelled out next to the app's own label ("12×10 F": 12 kg, 10 reps, to
+        // failure), so reading it back to the user cannot swap the weight and the reps.
+        sets: e.sets.map((row, i) => ({
+          label: v.sets[i].label,
+          weight: Number(row.w) || 0,
+          ...(row.sec != null ? { seconds: row.sec } : { reps: row.r }),
+          ...(row.phase === 'warmup' ? { warmup: true } : {}),
+          ...(row.failure ? { failure: true } : {}),
+          ...(row.rir != null ? { rir: row.rir } : {}),
+          ...(row.rpe != null ? { rpe: row.rpe } : {}),
+        })),
         ...(e.note ? { note: e.note } : {}),
       }
     }),
@@ -126,6 +136,9 @@ export const logWorkout = {
     }
 
     let got = await apiFetch(cfg, '/api/data', opts)
+    // A description without a unit is in the profile's, as the profile was when first read: a
+    // retry after another device switched kg ↔ lb reads the same numbers the same way.
+    let unit = null
     for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
       const doc = got.body?.state
       if (!doc || typeof doc !== 'object') {
@@ -134,16 +147,20 @@ export const logWorkout = {
       // The document exactly as the server sent it, plus the workout: anything else in the PUT —
       // a default filled in here — would be stamped as an edit made now and land on every device.
       const S = structuredClone(doc)
-      const built = buildLoggedWorkout(S, input, { now })
+      unit = unit || (S.unit === 'lb' ? 'lb' : 'kg')
+      // The profile's own exercises indexed for the build, as the app has them: a custom one-arm
+      // dumbbell press counts one bell, a custom assisted machine folds towards less help.
+      const built = withCustomsIndexed(S, () => buildLoggedWorkout(S, input, { now, unit }))
       if (built.problems) {
         return { logged: false, problems: built.problems, next: 'Nothing was saved. Settle these with the user (pick a candidate id, fix a set) and call again.' }
       }
       const preview = viewOf(built.workout, S, built)
       if (params.dry_run) {
         const dup = findDuplicate(S, built.workout)
-        return { logged: false, dry_run: true, would_log: preview, ...(dup && !params.allow_duplicate ? { duplicate_of: dup.id } : {}) }
+        return { logged: false, dry_run: true, would_log: preview, ...(dup && (dup.sameRequest || !params.allow_duplicate) ? { duplicate_of: dup.workout.id } : {}) }
       }
-      const added = appendLoggedWorkout(S, built, { now, allowDuplicate: params.allow_duplicate === true })
+      const added = withCustomsIndexed({ customEx: [...(S.customEx || []), ...built.customEx] }, () =>
+        appendLoggedWorkout(S, built, { now, allowDuplicate: params.allow_duplicate === true }))
       if (!added.added) {
         return { logged: false, duplicate: true, workout_id: added.workout.id, date: added.workout.d, message: 'This session is already in the history; nothing was added. If it really was a second session, call again with allow_duplicate: true and a different start or name.' }
       }
