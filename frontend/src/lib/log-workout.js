@@ -27,6 +27,8 @@ const LB_TO_KG = 0.45359237
 export const LOG_LIMITS = { maxKg: 2000, maxReps: 1000, maxSec: 6 * 3600, maxSets: 50, maxExercises: 40, maxDurationMin: 24 * 60 }
 export const BODY_PARTS = ['back', 'cardio', 'chest', 'lower arms', 'lower legs', 'neck', 'shoulders', 'upper arms', 'upper legs', 'waist']
 
+// The least a "just did" squeezed in after today's last session may last before the plain hour wins.
+const MIN_ROOM_MS = 5 * 60000
 const ISO = /^\d{4}-\d{2}-\d{2}$/
 const HHMM = /^([01]\d|2[0-3]):([0-5]\d)$/
 const localIso = t => {
@@ -216,9 +218,10 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
     } else {
       const lastEnd = Math.max(0, ...(S.workouts || []).filter(w => w?.d === date).map(w => Number(w.end) || Number(w.start) || 0))
       start = Math.max(end - 60 * 60000, lastEnd, midnight)
-      // A session on file that ends after now (another device's clock ahead of this one) leaves
-      // no room after it: the plain hour, and the chronological filing below decides.
-      if (start >= end) start = Math.max(end - 60 * 60000, midnight)
+      // Too little room after it — a session on file that ended moments ago, or ends after now
+      // (another device's clock ahead) — would make a session of seconds, read back as "0 min":
+      // the plain hour instead, and the chronological filing below decides where it goes.
+      if (end - start < MIN_ROOM_MS) start = Math.max(end - 60 * 60000, midnight)
     }
   }
   if (start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }
