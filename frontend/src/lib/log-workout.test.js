@@ -355,20 +355,23 @@ describe('found in review, round 3', () => {
     expect(r.problems[0].field).toBe('durationMin')
   })
 
-  it('a "just did" seconds after the app session is the plain hour filed after it, not a 5-second session', () => {
-    const S = profile({ workouts: [appSession('18:00:00', '19:29:55')] })
-    const built = build(S, curls())
-    expect(built.workout.end - built.workout.start).toBe(60 * 60000)
-    const r = appendLoggedWorkout(S, built, { now: NOW })
-    expect(S.workouts.map(w => w.id)).toEqual(['w-app', r.workout.id])
-    expect(r.workout._ts).toBeUndefined()
+  it('a "just did" seconds after the app session lasts the five-minute floor and is filed after it, as a live finish', () => {
+    for (const [from, to] of [['18:00:00', '19:29:55'], ['18:50:00', '19:27:00']]) {
+      const S = profile({ workouts: [appSession(from, to)] })
+      const built = build(S, curls())
+      expect(built.workout.end - built.workout.start, from).toBe(5 * 60000)
+      const r = appendLoggedWorkout(S, built, { now: NOW })
+      expect(S.workouts.map(w => w.id), from).toEqual(['w-app', r.workout.id])
+      expect(r.workout._ts, from).toBeUndefined()
+      expect(S.exWeights['0294'], from).toEqual({ w: 12, d: TODAY })
+    }
   })
 
   it("a session on file newer than now (another device's clock ahead) is not jumped: badges are rebuilt", () => {
     const ahead = appSession('19:32:00', '19:35:00', 100, ['0025'])
     const S = profile({ workouts: [ahead] })
     const built = build(S, { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 3, weight: 110 }] }] })
-    expect(built.workout.end - built.workout.start).toBe(60 * 60000)
+    expect(built.workout.end - built.workout.start).toBe(5 * 60000)
     const r = appendLoggedWorkout(S, built, { now: NOW })
     expect(S.workouts.map(w => w.id)).toEqual([r.workout.id, 'w-app'])
     expect(r.workout.prs).toEqual(['0025'])
