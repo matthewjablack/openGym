@@ -112,6 +112,9 @@ describe('the numbers', () => {
     expect(w.entries[0].target.dbLoad).toBe('each')
     expect(w.vol).toBe(400)
     expect(build(profile(), { date: TODAY, exercises: [{ exercise: '0289', sets: [{ reps: 10, weight: 20 }] }] }).workout.vol).toBe(200)
+    const total = build(profile({ dbLoad: { '0289': { mode: 'total', _ts: 1 } } }), { date: TODAY, exercises: [{ exercise: '0289', sets: [{ reps: 10, weight: 40 }] }] }).workout
+    expect(total.entries[0].target.dbLoad).toBe('total')
+    expect(total.vol).toBe(400)
   })
 
   it('failure, RIR and RPE ride on the row; both scales at once, or effort on a hold, are refused', () => {
@@ -147,6 +150,9 @@ describe('the numbers', () => {
   it('times: today ends now; a given start and length are kept; the past gets the backfill 18:00 and hour', () => {
     const today = build(profile(), curls({ durationMin: 45 })).workout
     expect([today.start, today.end]).toEqual([NOW - 45 * 60000, NOW])
+    // no length given: the backfill's hour, not a zero-minute session
+    const untimed = build(profile(), curls()).workout
+    expect(untimed.end - untimed.start).toBe(60 * 60000)
     const given = build(profile(), curls({ start: '17:10', durationMin: 50 })).workout
     expect(given.start).toBe(new Date('2026-10-20T17:10:00').getTime())
     expect(given.end - given.start).toBe(50 * 60000)

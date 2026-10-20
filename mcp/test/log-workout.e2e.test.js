@@ -111,6 +111,25 @@ describe.skipIf(!HAVE_API)('log_workout against the real api', () => {
     expect(stored()._rev).toBe(6)
   })
 
+  test('a backup restored in between (same revision, another write id) is merged, not written over', async () => {
+    let restored = false
+    const fetchImpl = async (url, opts) => {
+      if (opts?.method === 'PUT' && !restored) {
+        restored = true
+        // the operator puts back a copy whose counter happens to match: only the write id differs
+        const cur = stored()
+        fs.writeFileSync(path.join(dataDir, `state-${UID}.json`), JSON.stringify({ ...cur, targetW: 77, _wid: 'w-restored' }))
+      }
+      return fetch(url, opts)
+    }
+    const r = await logWorkout.handler({ date: '2026-10-12', exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 95 }] }] }, { env: env(), fetchImpl })
+    expect(r.logged).toBe(true)
+    const after = stored()
+    expect(after.targetW).toBe(77)
+    expect(after._wids).toContain('w-restored')
+    expect(after.workouts.some(w => w.d === '2026-10-12')).toBe(true)
+  })
+
   test('a phone pushing in between: both its change and the workout survive', async () => {
     const phonePush = async () => {
       const cur = await get('/api/data')
@@ -131,7 +150,9 @@ describe.skipIf(!HAVE_API)('log_workout against the real api', () => {
     expect(r.logged).toBe(true)
     const after = stored()
     expect(after.restSec).toBe(75)
-    expect(after.workouts.map(w => w.d)).toEqual(['2026-10-13', '2026-10-14', after.workouts[2].d])
+    const days = after.workouts.map(w => w.d)
+    expect(days).toContain('2026-10-14')
+    expect(days).toEqual([...days].sort())
     // into the past: a backfill, so the confirmed weight stays where the device left it
     expect(after.exWeights['0025']).toEqual(DOC.exWeights['0025'])
   })

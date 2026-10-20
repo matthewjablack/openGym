@@ -99,7 +99,7 @@ export const logWorkout = {
     'Log a workout the user describes into their openGym history (it syncs to all their devices). Turn what they said into exercises and one entry per set:',
     '"curls, 12 kg, 12/12/10" is three sets of {reps, weight: 12}; "3 sets of 12, except the last was 10" is 12, 12, 10.',
     'Ask instead of assuming when the weight, the number of sets or the reps are unclear.',
-    'Exercises are matched against the user\'s library by name or id. If a name matches several exercises, or none, nothing is saved and `problems` lists candidates: ask the user which one, then call again with its id.',
+    'Exercises are matched against the user\'s library by name or id. A common name resolves to the library\'s default variant ("shoulder press" is the barbell one): when the reply\'s `name` differs from `you_said` and the variant matters (dumbbell vs barbell, machine vs cable), confirm with the user, or pass an id. If a name matches several exercises, or none, nothing is saved and `problems` lists candidates: ask the user which one, then call again with its id.',
     'Only set create_custom for an exercise the user confirms is not in the library.',
     'Call with dry_run: true first when you had to interpret anything, show the user the preview, and log it once they agree.',
     'Calling again with the same description does not log it twice. Cardio (time and speed) and supersets are not supported here.',
@@ -132,7 +132,9 @@ export const logWorkout = {
     const uid = me.body?.user?.id
     const local = localUid()
     if (local && uid && local !== uid) {
-      throw fail('EPROFILE', `OPENGYM_TOKEN belongs to another profile (${me.body.user.name || uid}) than the one this server reads (${local}); pair again from the right profile, or set OPENGYM_UID to match`)
+      // The ids go to the operator on stderr, not into the model's context (state.js ambiguousUid).
+      console.error(`[opengym-mcp] OPENGYM_TOKEN is for profile ${uid}, this server reads ${local}`)
+      throw fail('EPROFILE', 'OPENGYM_TOKEN belongs to another profile than the one this server reads: pair again from the right profile, or set OPENGYM_UID to match (the ids are on the server\'s stderr)')
     }
 
     let got = await apiFetch(cfg, '/api/data', opts)
@@ -170,8 +172,12 @@ export const logWorkout = {
         return { logged: true, ...viewOf(added.workout, S, built), revision: put.body?.rev ?? null }
       }
       // Another device wrote in between: the server sent its current document back with the 409,
-      // so the workout is built again on top of that one.
-      got = { status: 200, body: { state: put.body?.state, rev: put.body?.rev } }
+      // so the workout is built again on top of that one. A 409 without one (a proxy's page) is
+      // not something to build on.
+      if (!put.body?.state || typeof put.body.state !== 'object' || typeof put.body.rev !== 'number') {
+        throw fail('EAPI', 'the openGym server answered 409 without the current profile; nothing was saved')
+      }
+      got = { status: 200, body: { state: put.body.state, rev: put.body.rev } }
     }
     throw fail('ECONFLICT', `the profile kept changing on the server (${MAX_ATTEMPTS} attempts); nothing was saved — try again in a moment`)
   },

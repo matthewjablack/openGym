@@ -105,9 +105,12 @@ builds the workout the way the app's Finish button does (PR badges, the next sug
 warm-ups kept out of volume) and saves it through your openGym server, so every signed-in
 device shows it within half a minute. Asking for the same thing twice logs it once.
 
-It never guesses an exercise. "Lever chest press" is two entries in the library; a name like that,
-or one that matches nothing, comes back as a question with candidates, and the LLM asks you which.
-It only creates one of your own exercises when you confirm the library has none.
+Exercise names are matched the way a CSV import matches them. A common name resolves to the
+library's default variant ("shoulder press" is the barbell one, "leg press" the 45° sled), and the
+reply shows what it was matched to so the LLM can check with you. What it will not do is pick
+between two entries: "lever chest press" is two in the library, and a name like that, or one that
+matches nothing, comes back as a question with candidates. It only creates one of your own
+exercises when you confirm the library has none.
 
 ### Pairing
 
@@ -141,6 +144,8 @@ Things to know about that token:
   network in the clear.
 - It lasts `SESSION_DAYS` (90 days by default). **Sign out everywhere** in Settings ends it at
   once. Either way `log_workout` then says the token was not accepted: pair again.
+- Pairing again gets you a new token but does **not** end the old one. To retire a token you
+  think has leaked, use Sign out everywhere (which also disconnects paired phones).
 - If the MCP server also reads a `./data` directory, the token has to belong to the same profile
   (`OPENGYM_UID`); a token for another one is refused. The server can be remote: without
   `OPENGYM_DATA` the read tools have nothing to read, but `log_workout` still works.

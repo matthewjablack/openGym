@@ -164,6 +164,19 @@ describe('found in review', () => {
     expect(api.doc.workouts[0].vol).toBe(200)
   })
 
+  test('a custom assisted machine folds towards less help: more help is not a new confirmed weight', async () => {
+    const own = { id: 'c-dip', n: 'Assisted Dip (mine)', custom: true, eq: 'custom', bp: 'chest', assisted: true, tg: '', desc: '' }
+    api.doc = { ...DOC(), customEx: [own], exWeights: { 'c-dip': { w: 20, d: '2026-10-01' } } }
+    const r = await call({ exercises: [{ exercise: 'c-dip', sets: [{ reps: 8, weight: 30 }] }] })
+    expect(r.logged).toBe(true)
+    expect(api.doc.exWeights['c-dip']).toEqual({ w: 20, d: '2026-10-01' })
+  })
+
+  test('a 409 without the current profile in it is an error, not "sign in once"', async () => {
+    api.script.put = [send => send(409, { error: 'conflict' })]
+    await expect(call(CURLS)).rejects.toMatchObject({ code: 'EAPI', message: expect.stringContaining('409') })
+  })
+
   test('a token pasted with a line break is refused without being repeated, before any request', async () => {
     const err = await call(CURLS, { ...api.env, OPENGYM_TOKEN: 'abc.def\nsecret-tail' }).catch(e => e)
     expect(err.code).toBe('ENOCONFIG')
@@ -217,7 +230,11 @@ describe('the token has to belong to the profile being read', () => {
   test('a token for another profile is refused before anything is read or written', async () => {
     api = await stubApi(DOC(), { uid: 'someone-else' })
     _seedStateForTests(DOC())
-    await expect(call(CURLS)).rejects.toMatchObject({ code: 'EPROFILE' })
+    const err = await call(CURLS).catch(e => e)
+    expect(err.code).toBe('EPROFILE')
+    // the account ids are the operator's (stderr), not the model's
+    expect(err.message).not.toContain('someone-else')
+    expect(err.message).not.toContain('test-uid')
     expect(api.gets).toBe(0)
     expect(api.puts).toHaveLength(0)
   })

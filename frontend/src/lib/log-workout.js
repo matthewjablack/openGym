@@ -7,9 +7,10 @@
 // session someone just did is the app's own kind of workout, so a session logged for today gets
 // its PR badges and moves the confirmed weights the way Finish does, and one logged into the past
 // is a backfill — badges held against the history around it (rebuildPrHistory), confirmed weights
-// left alone. What it never does is guess: a name the catalogue spells twice, or a custom exercise
-// that is not there yet, comes back as a problem to put to the user instead of a workout filed
-// under the wrong lift.
+// left alone. A common name resolves the way an import resolves it, to the catalogue's default
+// variant ("shoulder press" is the barbell one), and the reply says which; what it does not do is
+// pick between names the catalogue spells alike or invent an exercise: those come back as a
+// problem to put to the user instead of a workout filed under the wrong lift.
 import { EXIDX, canonicalExId, betterWeight, beatsWeight, isCardio } from './exercises.js'
 import { exerciseCandidates, importId, bpFromName } from './import-csv.js'
 import { bestWeightFor, bestWeightForEntry, workoutVolume, EFFORT } from './history.js'
@@ -187,8 +188,9 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
   if (problems.length) return { problems }
 
   const past = date < today
-  // Today without a start time: it ended now, which is when people say "just did". Into the past
-  // without one: the backfill's 18:00 and hour (backfill.js), as when it is logged in the app.
+  // Today without a start time: it ended now, which is when people say "just did", and lasted the
+  // backfill's hour unless they said otherwise. Into the past without one: the backfill's 18:00
+  // and hour (backfill.js), as when it is logged in the app.
   let start, end
   if (input.start != null) {
     start = new Date(`${date}T${input.start}:00`).getTime()
@@ -198,7 +200,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
     end = start + (dur ?? 60) * 60000
   } else {
     end = now
-    start = end - (dur ?? 0) * 60000
+    start = end - (dur ?? 60) * 60000
   }
   if (start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }
   // As the app's own backfill refuses one (sheets.jsx endsInFuture): a finished session that has
