@@ -28,7 +28,7 @@ import { buildSessionEntries, startsFromLast } from '../../frontend/src/lib/sess
 // as a zod refine that is a -32602 at the SDK boundary instead of a confident wrong answer.
 const localIso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0')
 const todayIso = () => localIso(new Date())
-const isoDate = () => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD').refine(
+export const isoDate = () => z.string().regex(/^\d{4}-\d{2}-\d{2}$/, 'must be YYYY-MM-DD').refine(
   v => { const d = new Date(v + 'T12:00:00'); return !Number.isNaN(d.getTime()) && localIso(d) === v },
   { message: 'not a date the calendar has (YYYY-MM-DD)' }
 )
@@ -51,7 +51,7 @@ function withCustomsIndexed(S, build) {
   try { return build() } finally { registerCustom([]) }
 }
 
-function entryView(e, S) {
+export function entryView(e, S) {
   const ex = exerciseOf(e.id, S)
   // Spread id into the cfg the way every call site in the app does (Workout.jsx, Stats.jsx,
   // progression.js) — the sheet saves a cardio target as {sets, min, speed} with no id and no

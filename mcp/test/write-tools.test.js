@@ -1,0 +1,168 @@
+// log_workout against a stand-in for the api: a node:http server that answers /api/me and
+// /api/data the way api/server.js does, and records what it is sent. What the real server does
+// with the write is log-workout.e2e.test.js; the arithmetic is frontend/src/lib/log-workout.test.js.
+import { describe, test, expect, beforeEach, afterEach } from 'vitest'
+import http from 'node:http'
+import { logWorkout } from '../src/write-tools.js'
+import { apiBase, apiConfig } from '../src/api-client.js'
+import { _seedStateForTests } from '../src/state.js'
+
+const TOKEN = 'tok.secret-value'
+const UID = 'u1'
+const today = () => { const d = new Date(); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0') }
+
+let api
+// `script.put` answers each PUT in turn; past the end it accepts.
+function stubApi(doc, script = {}) {
+  const s = { doc: structuredClone(doc), rev: 7, puts: [], gets: 0, auth: [], script }
+  const server = http.createServer(async (req, res) => {
+    s.auth.push(req.headers.authorization)
+    const send = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)) }
+    if (req.headers.authorization !== 'Bearer ' + TOKEN) return send(401, { error: 'not signed in' })
+    if (req.url === '/api/me') return send(200, { user: { id: script.uid || UID, name: 'Matt' }, token: 'renewed.secret' })
+    if (req.url === '/api/data' && req.method === 'GET') { s.gets++; return send(200, { state: s.doc, rev: s.rev }) }
+    if (req.url === '/api/data' && req.method === 'PUT') {
+      let raw = ''
+      for await (const c of req) raw += c
+      const body = JSON.parse(raw)
+      s.puts.push(body)
+      const next = (script.put || [])[s.puts.length - 1]
+      if (next) return next(send, s)
+      if (body.baseRev !== s.rev) return send(409, { error: 'conflict', rev: s.rev, state: s.doc })
+      s.doc = body.state
+      s.rev++
+      return send(200, { ok: true, rev: s.rev })
+    }
+    send(404, { error: 'not found' })
+  })
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => {
+    s.server = server
+    s.env = { OPENGYM_URL: `http://127.0.0.1:${server.address().port}`, OPENGYM_TOKEN: TOKEN }
+    resolve(s)
+  }))
+}
+afterEach(() => api?.server.close())
+
+const DOC = () => ({ unit: 'kg', workouts: [], routines: [{ id: 'r1', name: 'Push', ex: [] }], customEx: [], exWeights: {}, edited: { restSec: 5 }, restSec: 120, _wid: 'w-abc', _ts: 1 })
+const CURLS = { exercises: [{ exercise: 'dumbbell curl', sets: [{ reps: 12, weight: 12 }, { reps: 12, weight: 12 }, { reps: 10, weight: 12, failure: true }] }] }
+const call = (params, env = api.env) => logWorkout.handler(params, { env })
+
+describe('log_workout writes through the server', () => {
+  beforeEach(async () => { api = await stubApi(DOC()) })
+
+  test('the document the server sent, plus the workout, with the revision and write id it was read at', async () => {
+    const r = await call(CURLS)
+    expect(r.logged).toBe(true)
+    expect(r.date).toBe(today())
+    expect(r.exercises[0]).toMatchObject({ id: '0294', you_said: 'dumbbell curl' })
+    expect(r.exercises[0].sets).toHaveLength(3)
+    expect(r.exercises[0].sets[2]).toMatch(/to failure/)
+    expect(api.puts).toHaveLength(1)
+    const put = api.puts[0]
+    expect(put).toMatchObject({ baseRev: 7, baseWid: 'w-abc' })
+    expect(put.stamped).toBeUndefined()
+    // nothing the server did not send: no defaults (lang, theme…) for it to stamp as edits
+    const { workouts, _ts, ...rest } = put.state
+    const { workouts: w0, _ts: t0, ...rest0 } = DOC()
+    expect(rest).toEqual({ ...rest0, exWeights: { '0294': { w: 12, d: today() } } })
+    expect(workouts).toHaveLength(1)
+    expect(_ts).toBeGreaterThan(t0)
+    expect(r.revision).toBe(8)
+  })
+
+  test('dry_run builds the preview and writes nothing', async () => {
+    const r = await call({ ...CURLS, dry_run: true })
+    expect(r).toMatchObject({ logged: false, dry_run: true })
+    expect(r.would_log.exercises[0].name).toBeTruthy()
+    expect(api.puts).toHaveLength(0)
+  })
+
+  test('a name with several matches comes back as problems with candidates, and nothing is written', async () => {
+    const r = await call({ exercises: [{ exercise: 'lever chest press', sets: [{ reps: 10, weight: 40 }] }] })
+    expect(r.logged).toBe(false)
+    expect(r.problems[0].candidates.length).toBeGreaterThan(1)
+    expect(api.puts).toHaveLength(0)
+  })
+
+  test('the same call again is the same workout: no second write', async () => {
+    expect((await call(CURLS)).logged).toBe(true)
+    const again = await call(CURLS)
+    expect(again).toMatchObject({ logged: false, duplicate: true })
+    expect(api.puts).toHaveLength(1)
+    expect(api.doc.workouts).toHaveLength(1)
+  })
+
+  test('a 409 is merged on the document it carries and written again, once', async () => {
+    // a phone pushes between the MCP's read and its write
+    api.script.put = [(send, s) => {
+      s.doc = { ...s.doc, restSec: 90, routines: [...s.doc.routines, { id: 'r2', name: 'Pull', ex: [] }], _wid: 'w-phone' }
+      s.rev = 8
+      send(409, { error: 'conflict', rev: s.rev, state: s.doc })
+    }]
+    const r = await call(CURLS)
+    expect(r.logged).toBe(true)
+    expect(api.puts).toHaveLength(2)
+    expect(api.puts[1]).toMatchObject({ baseRev: 8, baseWid: 'w-phone' })
+    expect(api.doc.restSec).toBe(90)
+    expect(api.doc.routines.map(x => x.id)).toEqual(['r1', 'r2'])
+    expect(api.doc.workouts).toHaveLength(1)
+    // the retry files the same workout, not one stamped a moment later
+    expect(api.puts[1].state.workouts[0].id).toBe(api.puts[0].state.workouts[0].id)
+  })
+
+  test('a profile that never stops changing gives up after three tries, saying so', async () => {
+    const conflict = (send, s) => { s.rev++; send(409, { error: 'conflict', rev: s.rev, state: s.doc }) }
+    api.script.put = [conflict, conflict, conflict]
+    await expect(call(CURLS)).rejects.toMatchObject({ code: 'ECONFLICT' })
+  })
+
+  test('a rejected token says what to do, and never repeats the token or the renewed one', async () => {
+    const err = await call(CURLS, { ...api.env, OPENGYM_TOKEN: 'wrong' }).catch(e => e)
+    expect(err.code).toBe('EAUTH')
+    expect(err.message).toMatch(/pair again/i)
+    expect(err.message).not.toContain('wrong')
+    const ok = JSON.stringify(await call(CURLS))
+    expect(ok).not.toContain('secret')
+  })
+
+  test('a server error and an unreachable server are errors with the status, not a silent no-op', async () => {
+    api.script.put = [send => send(500, { error: 'disk full' })]
+    await expect(call(CURLS)).rejects.toMatchObject({ code: 'EAPI', message: expect.stringContaining('500: disk full') })
+    await expect(call(CURLS, { ...api.env, OPENGYM_URL: 'http://127.0.0.1:1' })).rejects.toMatchObject({ code: 'EAPI' })
+  })
+
+  test('a profile with nothing synced yet is told to sign in once, not given a document of one workout', async () => {
+    api.doc = null
+    await expect(call(CURLS)).rejects.toMatchObject({ code: 'ENOSTATE' })
+    expect(api.puts).toHaveLength(0)
+  })
+})
+
+describe('configuration', () => {
+  test('missing config is ENOCONFIG naming both variables', async () => {
+    await expect(logWorkout.handler(CURLS, { env: {} })).rejects.toMatchObject({ code: 'ENOCONFIG', message: expect.stringContaining('OPENGYM_TOKEN') })
+  })
+
+  test('https, or http only to this machine: the token is a full sign-in', () => {
+    expect(apiBase('https://gym.example.com/')).toBe('https://gym.example.com')
+    expect(apiBase('https://example.com/gym/')).toBe('https://example.com/gym')
+    expect(apiBase('http://localhost:8080')).toBe('http://localhost:8080')
+    expect(apiBase('http://127.0.0.1:8080')).toBe('http://127.0.0.1:8080')
+    expect(apiBase('http://[::1]:8080')).toBe('http://[::1]:8080')
+    expect(() => apiBase('http://gym.lan:8080')).toThrow(/https/)
+    expect(() => apiBase('http://192.168.1.5')).toThrow(/https/)
+    expect(() => apiBase('not a url')).toThrow(/not a URL/)
+    expect(() => apiConfig({ OPENGYM_URL: 'http://gym.lan', OPENGYM_TOKEN: 'x' })).toThrow(/https/)
+  })
+})
+
+// Last: seeding gives state.js a profile of its own for the rest of this file.
+describe('the token has to belong to the profile being read', () => {
+  test('a token for another profile is refused before anything is read or written', async () => {
+    api = await stubApi(DOC(), { uid: 'someone-else' })
+    _seedStateForTests(DOC())
+    await expect(call(CURLS)).rejects.toMatchObject({ code: 'EPROFILE' })
+    expect(api.gets).toBe(0)
+    expect(api.puts).toHaveLength(0)
+  })
+})

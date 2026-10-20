@@ -145,6 +145,20 @@ export function getUser() {
 
 export const dataDir = () => DATA_DIR
 
+// The profile the read tools answer for, or null when there is none to read (no data directory
+// here, a remote server). Never throws: log_workout asks it only to refuse a token that belongs
+// to some other profile than the one being read.
+export function localUid() {
+  try { init(); return _uid } catch { return null }
+}
+
+// Drop the cached state, so the next read sees a write log_workout just made without waiting for
+// the watcher. Only meaningful when this data directory is the one the server writes.
+export function invalidate() {
+  _state = undefined
+  _loadedMtime = 0
+}
+
 // Test-only: work against a passed-in state, not the disk.
 export function _seedStateForTests(state) {
   _uid = 'test-uid'
