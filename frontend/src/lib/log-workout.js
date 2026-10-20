@@ -195,11 +195,11 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
 
   const past = date < today
   // A length nobody gave is the backfill's hour (backfill.js), as when a session is logged in the
-  // app. Into the past without a start: the backfill's 18:00. Today without one it is a live
-  // finish — "just did" — so it ended now and is filed after anything already logged today: its
-  // start is held to no earlier than today's last session ended, and no earlier than midnight.
+  // app. Into the past without a start: the backfill's 18:00. Today without one it is "just did":
+  // it ended now. A length the caller gave is kept as given; the hour that stands in for a missing
+  // one is only as long as fits after today's last session (and after midnight), so a "just did"
+  // lands after the session just logged in the app rather than overlapping it.
   let start, end
-  const live = !past && input.start == null
   if (input.start != null) {
     start = new Date(`${date}T${input.start}:00`).getTime()
     end = start + (dur ?? 60) * 60000
@@ -209,8 +209,17 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
     end = start + (dur ?? 60) * 60000
   } else {
     end = now
-    const lastEnd = Math.max(0, ...(S.workouts || []).filter(w => w?.d === date).map(w => Number(w.end) || Number(w.start) || 0))
-    start = Math.min(end, Math.max(end - (dur ?? 60) * 60000, lastEnd, new Date(date + 'T00:00:00').getTime()))
+    const midnight = new Date(date + 'T00:00:00').getTime()
+    if (dur != null) {
+      start = end - dur * 60000
+      if (start < midnight) return { problems: [{ field: 'durationMin', problem: 'a session that long ending now began yesterday: give the date and start it began on' }] }
+    } else {
+      const lastEnd = Math.max(0, ...(S.workouts || []).filter(w => w?.d === date).map(w => Number(w.end) || Number(w.start) || 0))
+      start = Math.max(end - 60 * 60000, lastEnd, midnight)
+      // A session on file that ends after now (another device's clock ahead of this one) leaves
+      // no room after it: the plain hour, and the chronological filing below decides.
+      if (start >= end) start = Math.max(end - 60 * 60000, midnight)
+    }
   }
   if (start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }
   // As the app's own backfill refuses one (sheets.jsx endsInFuture): a finished session that has
@@ -238,7 +247,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
   // finish-workout's whitelist keeps `target`, which a timed hold and a dumbbell meaning need to
   // read back; volume as Finish stores it (warm-ups out, "each" counted per bell).
   workout.vol = workoutVolume(workout)
-  return { workout, past, live, customEx, resolved }
+  return { workout, past, customEx, resolved }
 }
 
 const sameEntries = (a, b) =>
@@ -277,7 +286,7 @@ export function appendLoggedWorkout(S, built, { now = Date.now(), allowDuplicate
   // already in — it is a backfill: a badge it leads with, and one it falsifies on a later session
   // taken away, which the live-finish rule below would leave standing.
   const later = S.workouts.some(x => x && (x.d > w.d || (x.d === w.d && (Number(x.start) || 0) > w.start)))
-  if (built.past || (later && !built.live)) {
+  if (built.past || later) {
     stampWorkout(w, now)
     const touched = [...new Set(w.entries.map(e => e.id))]
     S.workouts = rebuildPrHistory(insertChronological(S.workouts, w), touched, w)

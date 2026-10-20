@@ -337,3 +337,32 @@ describe('found in review, round 2', () => {
     expect(asIs.entries[0].target.dbLoad).toBeUndefined()
   })
 })
+
+describe('found in review, round 3', () => {
+  const appSession = (start, end, w = 100, prs = []) => ({
+    ...bench(TODAY, w, prs), id: 'w-app', start: new Date(`${TODAY}T${start}`).getTime(), end: new Date(`${TODAY}T${end}`).getTime(),
+  })
+
+  it('a length the caller gave is kept, even when it reaches back past the session just logged', () => {
+    const S = profile({ workouts: [appSession('18:00:00', '19:10:00')] })
+    const r = build(S, curls({ durationMin: 60 }))
+    expect(r.problems).toBeUndefined()
+    expect(r.workout.end - r.workout.start).toBe(60 * 60000)
+  })
+
+  it('a given length that would start yesterday is a question, not a shorter session', () => {
+    const r = buildLoggedWorkout(profile(), curls({ durationMin: 90 }), { now: new Date(`${TODAY}T00:30:00`).getTime() })
+    expect(r.problems[0].field).toBe('durationMin')
+  })
+
+  it("a session on file newer than now (another device's clock ahead) is not jumped: badges are rebuilt", () => {
+    const ahead = appSession('19:32:00', '19:35:00', 100, ['0025'])
+    const S = profile({ workouts: [ahead] })
+    const built = build(S, { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 3, weight: 110 }] }] })
+    expect(built.workout.end - built.workout.start).toBe(60 * 60000)
+    const r = appendLoggedWorkout(S, built, { now: NOW })
+    expect(S.workouts.map(w => w.id)).toEqual([r.workout.id, 'w-app'])
+    expect(r.workout.prs).toEqual(['0025'])
+    expect(S.workouts[1].prs).toEqual([])
+  })
+})
