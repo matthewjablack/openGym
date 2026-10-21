@@ -220,15 +220,16 @@ const debriefState = () => sampleState({
 });
 
 test('a debrief payload carries one session, its predecessors of the same routine, and no library', () => {
-  const p = payload.build(debriefState(), { handle: handleFor('u'), kind: 'debrief', workoutId: 'w2' });
+  const S = debriefState();
+  const p = payload.build(S, { handle: handleFor('u'), kind: 'debrief', workoutId: 'w2' });
   assert.equal(p.task, 'debrief');
   assert.equal(p.session.id, 'w2');
   assert.equal(p.session.entries[0].sets.length, 4);
-  assert.deepEqual(p.previous.map(w => w.d), [daysAgo(21), daysAgo(14)]);
+  assert.deepEqual(p.previous.map(w => w.d), [S.workouts[0].d, S.workouts[2].d]);
   assert.equal('library' in p, false);
   assert.equal('window' in p, false);
   assert.ok(p.aggregates && Array.isArray(p.aggregates.exercises));
-  assert.ok(p.bodyweight.series.every(b => b.d <= daysAgo(7)));
+  assert.ok(p.bodyweight.series.every(b => b.d <= S.workouts[3].d));
 });
 
 test('a set taken to failure reaches the coach as failure, a warm-up never does', () => {
@@ -252,8 +253,9 @@ test('an unknown workout id falls back to the latest session', () => {
 });
 
 test('workoutMeta counts done work sets, keeps the stored volume and the PR count', () => {
-  const m = payload.workoutMeta(debriefState(), 'w2');
-  assert.deepEqual(m, { id: 'w2', d: daysAgo(7), name: 'Full body A', minutes: 45, vol: 600, sets: 2, prs: 1 });
+  const D = debriefState();
+  const m = payload.workoutMeta(D, 'w2');
+  assert.deepEqual(m, { id: 'w2', d: D.workouts[3].d, name: 'Full body A', minutes: 45, vol: 600, sets: 2, prs: 1 });
   assert.equal(payload.workoutMeta(sampleState({ workouts: [] }), 'w2'), null);
   // No stored volume: computed from the work sets.
   const S = sampleState({ workouts: [{ id: 'q', d: daysAgo(26), start: 1, end: 60001, entries: [{ id: '0001', sets: [{ w: 10, r: 10, done: true }, { w: 10, r: 10, done: true, phase: 'warmup' }] }] }] });
