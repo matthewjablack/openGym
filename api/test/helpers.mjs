@@ -53,19 +53,22 @@ export function writeState(dir, uid, S) {
   fs.writeFileSync(path.join(dir, 'state-' + uid + '.json'), JSON.stringify(S));
 }
 
-/* A date `n` days before today, the way the app stores one (YYYY-MM-DD).
+/* A date `n` days before `from` (today by default), the way the app stores one (YYYY-MM-DD).
  *
  * The coach only reads the last twelve weeks, so a fixture pinned to a calendar day ages out of
  * the window and every test that reads it starts failing on a date nobody chose (#663). Dates
- * here are counted back from today instead, keeping the gaps between them the same.
+ * here are counted back from today instead, keeping the gaps between them the same. A fixture
+ * whose dates depend on each other passes one `from` to all of them: read the clock once per
+ * date and a run that crosses midnight puts the weigh-in a day before the workout it belongs to.
  */
-export function daysAgo(n) {
-  const d = new Date(); d.setDate(d.getDate() - n);
+export function daysAgo(n, from = new Date()) {
+  const d = new Date(from); d.setDate(d.getDate() - n);
   return d.toISOString().slice(0, 10);
 }
 
 /** A profile that has consented and has some history — the usual starting point. */
 export function sampleState(over = {}) {
+  const now = new Date();
   return {
     unit: 'kg', lang: 'en', effort: 'rpe', targetW: 80,
     coach: { consent: { agreedAt: new Date().toISOString(), version: 1 }, profile: { goal: 'muscle', daysPerWeek: 3, equipment: ['dumbbell'] } },
@@ -79,10 +82,10 @@ export function sampleState(over = {}) {
     week: { 1: 'r1', 3: 'r1', 5: 'r1' },
     dayPlan: {},
     exWeights: { '0001': { w: 20 } },
-    bodyweight: [{ d: daysAgo(26), w: 78 }, { d: daysAgo(7), w: 78.5 }],
+    bodyweight: [{ d: daysAgo(26, now), w: 78 }, { d: daysAgo(7, now), w: 78.5 }],
     customEx: [],
     workouts: [{
-      id: 'w1', d: daysAgo(7), name: 'Full body A', start: 1000, end: 1000 + 45 * 60000, vol: 600, prs: [],
+      id: 'w1', d: daysAgo(7, now), name: 'Full body A', start: 1000, end: 1000 + 45 * 60000, vol: 600, prs: [],
       entries: [{
         id: '0001', target: { sets: 3, reps: 10, weight: 20 },
         sets: [{ w: 20, r: 10, done: true, rpe: 9.5 }, { w: 20, r: 9, done: true, rpe: 10 }, { w: 20, r: 8, done: true, rpe: 10 }]
