@@ -606,3 +606,59 @@ describe('found in review, cardio round 3: the preview of a duplicate', () => {
   })
 })
 
+describe('found in review, cardio round 4: a given start or length keeps the walk its hour', () => {
+  const fitActive = w => workoutFitMessages(w)
+    .filter(m => m.global === 225 && m.fields.find(f => f[0] === 5)[2] === 1)
+    .map(m => Math.round(m.fields.find(f => f[0] === 0)[2] / 1000))
+  const mixed = over => ({ date: TODAY, exercises: [
+    { exercise: '3666', sets: [{ minutes: 60, speed: 5 }] },
+    { exercise: '0025', sets: Array.from({ length: 10 }, () => ({ reps: 10, weight: 50 })) },
+  ], ...over })
+
+  it('a start an hour ago, or a length of an hour: the rep sets give way, not the logged walk', () => {
+    for (const over of [{ start: '18:30' }, { durationMin: 60 }]) {
+      const r = build(profile(), mixed(over))
+      expect(r.problems).toBeUndefined()
+      const secs = fitActive(r.workout)
+      expect(secs[0]).toBe(3600)
+      expect(secs.slice(1).every(s => s >= 1 && s < 30)).toBe(true)
+    }
+  })
+
+  it('timed work that overruns the session on its own still shrinks alike, as before', () => {
+    const w = { id: 'x', d: TODAY, start: NOW - 30 * 60000, end: NOW, name: 'W', routineIds: [], prs: [],
+      entries: [{ id: '3666', target: { id: '3666', mode: 'cardio' }, sets: [{ min: 60, speed: 5, done: true }] },
+        { id: '0025', target: { id: '0025' }, sets: [{ w: 50, r: 10, done: true }] }] }
+    const secs = fitActive(w)
+    expect(secs[0] + secs[1]).toBeLessThanOrEqual(1800)
+    expect(Math.abs(secs[0] / secs[1] - 3600 / 30)).toBeLessThan(5)
+  })
+})
+
+describe('found in review, cardio round 4: the rep-set guess never refuses a session', () => {
+  const walkAndLift = (mins, lift = '0652') => ({ date: TODAY, exercises: [
+    { exercise: '3666', sets: [{ minutes: mins, speed: 5 }] },
+    { exercise: lift, sets: [{ reps: 8 }, { reps: 8 }, { reps: 8 }] },
+  ] })
+
+  it('a 30-minute walk and pull-ups after a session that began 31 minutes ago: filed after it', () => {
+    const S = profile({ workouts: [{ ...bench(TODAY, 80), start: NOW - 31 * 60000, end: NOW - 25 * 60000 }] })
+    const r = build(S, walkAndLift(30))
+    expect(r.problems).toBeUndefined()
+    expect(r.workout.start).toBe(NOW - 30 * 60000)
+  })
+
+  it('a 15-minute walk and bench sets at 00:19: today, not "began yesterday"', () => {
+    const early = new Date(TODAY + 'T00:19:00').getTime()
+    const r = build(profile(), walkAndLift(15, '0025'), early)
+    expect(r.problems).toBeUndefined()
+    expect(r.workout.start).toBeGreaterThanOrEqual(new Date(TODAY + 'T00:00:00').getTime())
+    expect(r.workout.end - r.workout.start).toBeGreaterThanOrEqual(15 * 60000)
+  })
+
+  it('when the timed minutes themselves do not fit, it is still a question', () => {
+    const S = profile({ workouts: [{ ...bench(TODAY, 80), start: NOW - 29 * 60000, end: NOW - 25 * 60000 }] })
+    expect(build(S, walkAndLift(30)).problems[0]).toMatchObject({ field: 'start' })
+  })
+})
+

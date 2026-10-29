@@ -267,9 +267,10 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
   })
   // The session holds at least the minutes it was timed for, cardio and holds alike: a 120-minute
   // walk is not filed in the default hour, which the FIT export (scaling every set into the
-  // session) would then compress into a walk at twice the speed. A length the caller gave only has
-  // to hold the timed minutes; one filled in also holds the time the export gives each rep set,
-  // so an hour's walk beside ten bench sets is not exported as 55 minutes.
+  // session) would then compress into a walk at twice the speed. Only the timed minutes are a
+  // rule; a length filled in also makes room for the time the export guesses for each rep set
+  // where there is room, but a guess never refuses a session (the export squeezes the guesses
+  // before the logged minutes when they do not fit).
   const timedMin = entries.reduce((n, e) => n + e.sets.reduce((m, s) =>
     m + (e.target.mode === 'cardio' ? s.min : e.target.mode === 'time' ? s.sec / 60 : 0), 0), 0)
   const repMin = entries.reduce((n, e) => n + (e.target.mode === 'cardio' || e.target.mode === 'time' ? 0
@@ -315,11 +316,16 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
       // The timed work done since the last session still has to fit: it reaches back over that
       // one's end rather than file 20 minutes of walking in the 5 that are left. Not over its
       // start, though: that would file it before the session it followed, as a backfill.
-      if (end - start < workMin * 60000) {
-        start = end - workMin * 60000
-        if (start <= lastStart) return { problems: [{ field: 'start', problem: `${timedText} ending now would begin before today's last session did: give the start (and length) it really had` }] }
+      // The rep sets' guessed time goes along only when it fits as well.
+      const floorMin = Math.ceil(timedMin)
+      for (const need of workMin > floorMin ? [workMin, floorMin] : [floorMin]) {
+        if (end - start >= need * 60000) break
+        const reach = end - need * 60000
+        if (reach > lastStart && reach >= midnight) { start = reach; break }
+        if (need > floorMin) continue
+        if (reach < midnight) return { problems: [{ field: 'durationMin', problem: `${timedText} ending now began yesterday: give the date and start it began on` }] }
+        return { problems: [{ field: 'start', problem: `${timedText} ending now would begin before today's last session did: give the start (and length) it really had` }] }
       }
-      if (start < midnight) return { problems: [{ field: 'durationMin', problem: 'that much timed work ending now began yesterday: give the date and start it began on' }] }
     }
   }
   if (start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }

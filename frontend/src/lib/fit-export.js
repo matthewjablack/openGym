@@ -275,13 +275,21 @@ function placeItems(items, start, end) {
   const total = Math.max(0, end - start)
   const active = items.reduce((n, x) => n + x.len, 0)
   const rests = items.slice(1).filter(x => !x.chained).length
-  const scale = active > total && active > 0 ? total / active : 1
+  // Too much to fit: a rep set's length is a guess (repSetMs), a cardio interval's or a hold's is
+  // what was logged, so the guesses give way first. Only when the timed work alone overruns the
+  // session does everything shrink alike.
+  const known = items.reduce((n, x) => n + (x.mode === 'reps' ? 0 : x.len), 0)
+  const guessed = active - known
+  const squeezeGuesses = active > total && guessed > 0 && known <= total
+  const scaleOf = x => !(active > total && active > 0) ? 1
+    : squeezeGuesses ? (x.mode === 'reps' ? (total - known) / guessed : 1)
+      : total / active
   const rest = rests && active < total ? (total - active) / rests : 0
   let cursor = start
   return items.map((x, i) => {
     if (i > 0 && !x.chained) cursor += rest
     const s = cursor
-    const e = s + Math.max(1000, x.len * scale)
+    const e = s + Math.max(1000, x.len * scaleOf(x))
     cursor = e
     return { ...x, start: s, end: e }
   })
