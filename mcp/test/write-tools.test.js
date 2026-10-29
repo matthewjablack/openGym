@@ -333,6 +333,13 @@ describe('cardio and the dry run', () => {
     expect(api.puts).toHaveLength(0)
   })
 
+  test('a dry run of a walk in km/h on an mph profile: speed as given, label as the phone shows it', async () => {
+    api = await stubApi(LB())
+    const r = await call({ exercises: [{ exercise: '3666', sets: [{ minutes: 30, speed: 6 }] }], speed_unit: 'kmh', dry_run: true })
+    expect(r.would_log.exercises[0].sets).toEqual([{ label: '30 min @ 3.7 mph', minutes: 30, speed: 6, speed_unit: 'km/h', distance_km: 3 }])
+    expect(api.puts).toHaveLength(0)
+  })
+
   test('the dry run promises the PR badges the save then gives, and writes nothing', async () => {
     const past = { id: 'w0', d: '2026-01-05', start: new Date('2026-01-05T18:00:00').getTime(), end: new Date('2026-01-05T19:00:00').getTime(), routineIds: [], name: 'Arms', prs: ['0294'], entries: [{ id: '0294', sets: [{ w: 10, r: 12, done: true }], topW: 10, target: { id: '0294' } }] }
     api = await stubApi({ ...DOC(), workouts: [past] })

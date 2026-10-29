@@ -226,11 +226,17 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
     // modeOf), so one logged in reps or seconds (jumping jacks counted, a timed sprint) names its
     // mode; otherwise its sets would read as "0 min @ 0 km/h".
     const cardioEx = isCardio(hit.id) || exObj?.bp === 'cardio'
+    // As the config sheet offers Cardio only on a cardio exercise: "bench press, 20 minutes" is a
+    // misread, not a bench session whose history then charts minutes.
+    if (mode === 'cardio' && !cardioEx) {
+      problems.push({ field: at + '.sets', exercise: ex.exercise, problem: `${hit.name} is not a cardio exercise: give its reps or seconds, or name the cardio exercise` })
+      return
+    }
     const rows = []
     sets.forEach((s, j) => {
       const where = `${at}.sets[${j}]`
       if (mode === 'cardio') {
-        const { row, problem } = rowOf(s, mode, toProfile, speedUnit)
+        const { row, problem } = rowOf(s || {}, mode, toProfile, speedUnit)
         if (problem) problems.push({ field: where, problem })
         else if (row.incline && !inclineFits(exObj)) problems.push({ field: where, problem: `${hit.name} has no incline: drop it, or name the treadmill, stair or walking exercise` })
         else rows.push(row)
@@ -258,9 +264,15 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
     entries.push({ id: hit.id, sets: rows, target, ...(note ? { note } : {}) })
     resolved.push({ input: ex.exercise, id: hit.id, name: hit.name, mode, ...(target.dbLoad ? { weightMeans: target.dbLoad } : {}), ...(hit.created ? { created: true } : {}) })
   })
+  // The session holds at least the cardio it was: a 120-minute walk is not filed in the default
+  // hour, which the FIT export would then compress into a walk at twice the speed.
+  const workMin = entries.filter(e => e.target.mode === 'cardio').reduce((n, e) => n + e.sets.reduce((m, s) => m + s.min, 0), 0)
+  if (workMin > LOG_LIMITS.maxDurationMin) problems.push({ field: 'exercises', problem: `more than ${LOG_LIMITS.maxDurationMin} minutes of cardio in one session` })
+  else if (dur != null && workMin > dur) problems.push({ field: 'durationMin', problem: `shorter than the ${workMin} minutes of cardio in it` })
   if (problems.length) return { problems }
 
   const past = date < today
+  const fallbackMin = Math.max(60, workMin)
   // A length nobody gave is the backfill's hour (backfill.js), as when a session is logged in the
   // app. Into the past without a start: the backfill's 18:00. Today without one it is "just did":
   // it ended now. A length the caller gave is kept as given; the hour that stands in for a missing
@@ -269,11 +281,11 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
   let start, end
   if (input.start != null) {
     start = new Date(`${date}T${input.start}:00`).getTime()
-    end = start + (dur ?? 60) * 60000
+    end = start + (dur ?? fallbackMin) * 60000
     if (dur == null && !past) end = Math.max(start, Math.min(end, now))
   } else if (past) {
     start = backfillStart(date)
-    end = start + (dur ?? 60) * 60000
+    end = start + (dur ?? fallbackMin) * 60000
   } else {
     end = now
     const midnight = new Date(date + 'T00:00:00').getTime()
@@ -282,19 +294,24 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
       if (start < midnight) return { problems: [{ field: 'durationMin', problem: 'a session that long ending now began yesterday: give the date and start it began on' }] }
     } else {
       const lastEnd = Math.max(0, ...(S.workouts || []).filter(w => w?.d === date).map(w => Number(w.end) || Number(w.start) || 0))
-      start = Math.max(end - 60 * 60000, lastEnd, midnight)
+      start = Math.max(end - fallbackMin * 60000, lastEnd, midnight)
       // Too little room after it — a session on file that ended moments ago, or ends after now
       // (another device's clock ahead) — would make a session of seconds, read back as "0 min":
       // the floor instead, overlapping the last minutes of the one before as the app's backfill
       // allows, and still starting after it began, so it is filed after it as a live finish.
       // (One that starts later still is jumped, and the chronological rule below handles that.)
       if (end - start < MIN_ROOM_MS) start = Math.max(end - MIN_ROOM_MS, midnight)
+      // The cardio done since the last session still has to fit: it reaches back over that one's
+      // end rather than file 20 minutes of walking in the 5 that are left.
+      if (end - start < workMin * 60000) start = end - workMin * 60000
+      if (start < midnight) return { problems: [{ field: 'durationMin', problem: 'that much cardio ending now began yesterday: give the date and start it began on' }] }
     }
   }
   if (start > now) return { problems: [{ field: 'start', problem: 'is later than now' }] }
   // As the app's own backfill refuses one (sheets.jsx endsInFuture): a finished session that has
   // not finished yet would count its whole length into the stats now.
   if (end > now) return { problems: [{ field: 'durationMin', problem: 'the session would end later than now' }] }
+  if (end - start < workMin * 60000) return { problems: [{ field: 'start', problem: `the ${workMin} minutes of cardio from that start would end later than now` }] }
 
   const name = String(input.name ?? '').trim().slice(0, 80) || 'Workout'
   const note = String(input.note ?? '').trim().slice(0, 500)

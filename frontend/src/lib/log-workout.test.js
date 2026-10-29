@@ -507,3 +507,39 @@ describe('a dry run shows the badges the save will give', () => {
   })
 })
 
+describe('found in review, cardio round 1', () => {
+  it('a session holds its cardio: a 120-minute walk with no length is not filed in the default hour', () => {
+    const past = build(profile(), { date: '2026-10-18', exercises: [{ exercise: '3666', sets: [{ minutes: 120, speed: 5 }] }] }).workout
+    expect(past.end - past.start).toBe(120 * 60000)
+    const now = build(profile(), walk([{ minutes: 90, speed: 5 }])).workout
+    expect([now.end, now.end - now.start]).toEqual([NOW, 90 * 60000])
+    const started = build(profile(), walk([{ minutes: 75, speed: 5 }], { date: '2026-10-18', start: '07:00' })).workout
+    expect(started.end - started.start).toBe(75 * 60000)
+  })
+
+  it('a walk just after a session reaches back over its end rather than fit 20 minutes into 5', () => {
+    const S = profile({ workouts: [{ ...bench(TODAY, 80), start: NOW - 65 * 60000, end: NOW - 5 * 60000 }] })
+    const w = build(S, walk([{ minutes: 20, speed: 5 }])).workout
+    expect(w.end - w.start).toBe(20 * 60000)
+  })
+
+  it('a length shorter than its cardio, or a start that leaves no room for it before now, is a question', () => {
+    expect(build(profile(), walk([{ minutes: 20, speed: 5 }], { durationMin: 15 })).problems[0]).toMatchObject({ field: 'durationMin' })
+    expect(build(profile(), walk([{ minutes: 20, speed: 5 }], { start: '19:20' })).problems[0]).toMatchObject({ field: 'start' })
+    expect(build(profile(), walk([{ minutes: 20, speed: 5 }], { start: '19:00' })).problems).toBeUndefined()
+    const night = build(profile(), walk([{ minutes: 360 }, { minutes: 360 }, { minutes: 360 }, { minutes: 360 }, { minutes: 360 }])).problems
+    expect(night[0].problem).toMatch(/minutes of cardio/)
+  })
+
+  it('minutes on an exercise that is not cardio are refused, as the config sheet offers no cardio there', () => {
+    const r = build(profile(), { date: TODAY, exercises: [{ exercise: '0025', sets: [{ minutes: 20 }] }] })
+    expect(r.problems[0]).toMatchObject({ field: 'exercises[0].sets' })
+    expect(r.problems[0].problem).toMatch(/not a cardio exercise/)
+  })
+
+  it('a missing set among cardio sets is a problem, not a crash', () => {
+    const r = build(profile(), walk([{ minutes: 20, speed: 5 }, null]))
+    expect(r.problems[0]).toMatchObject({ field: 'exercises[0].sets[1]' })
+  })
+})
+
