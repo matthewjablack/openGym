@@ -196,9 +196,12 @@ export const logWorkout = {
       meanings = meanings || Object.fromEntries(built.workout.entries.map(e => [e.id, e.target?.dbLoad || 'as']))
       if (params.dry_run) {
         // Filed into a throw-away copy, so the preview carries the PR badges the save would give.
-        const filed = withCustomsIndexed({ customEx: [...(S.customEx || []), ...built.customEx] }, () => previewLoggedWorkout(S, built, { now }))
+        // Nothing would be added for a duplicate: the preview is then the description itself, not
+        // the copy on file (which an edit in the app may since have changed).
         const dup = findDuplicate(S, built.workout)
-        return { logged: false, dry_run: true, would_log: viewOf(filed, S, built), ...(dup && (dup.sameRequest || !params.allow_duplicate) ? { duplicate_of: dup.workout.id } : {}) }
+        const refused = dup && (dup.sameRequest || !params.allow_duplicate)
+        const filed = refused ? built.workout : withCustomsIndexed({ customEx: [...(S.customEx || []), ...built.customEx] }, () => previewLoggedWorkout(S, built, { now }))
+        return { logged: false, dry_run: true, would_log: viewOf(filed, S, built), ...(refused ? { duplicate_of: dup.workout.id } : {}) }
       }
       const added = withCustomsIndexed({ customEx: [...(S.customEx || []), ...built.customEx] }, () =>
         appendLoggedWorkout(S, built, { now, allowDuplicate: params.allow_duplicate === true }))

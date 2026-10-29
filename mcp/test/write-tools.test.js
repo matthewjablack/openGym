@@ -340,6 +340,16 @@ describe('cardio and the dry run', () => {
     expect(api.puts).toHaveLength(0)
   })
 
+  test('a dry run of a request already on file previews the description, not the copy edited since', async () => {
+    api = await stubApi(DOC())
+    expect((await call(CURLS)).logged).toBe(true)
+    api.doc.workouts[0].entries[0].sets[0].w = 99
+    const dry = await call({ ...CURLS, dry_run: true })
+    expect(dry.duplicate_of).toBe(api.doc.workouts[0].id)
+    expect(dry.would_log.exercises[0].sets[0].weight).toBe(12)
+    expect(api.puts).toHaveLength(1)
+  })
+
   test('the dry run promises the PR badges the save then gives, and writes nothing', async () => {
     const past = { id: 'w0', d: '2026-01-05', start: new Date('2026-01-05T18:00:00').getTime(), end: new Date('2026-01-05T19:00:00').getTime(), routineIds: [], name: 'Arms', prs: ['0294'], entries: [{ id: '0294', sets: [{ w: 10, r: 12, done: true }], topW: 10, target: { id: '0294' } }] }
     api = await stubApi({ ...DOC(), workouts: [past] })

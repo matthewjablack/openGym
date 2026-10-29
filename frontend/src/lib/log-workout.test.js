@@ -528,7 +528,7 @@ describe('found in review, cardio round 1', () => {
     expect(build(profile(), walk([{ minutes: 20, speed: 5 }], { start: '19:20' })).problems[0]).toMatchObject({ field: 'start' })
     expect(build(profile(), walk([{ minutes: 20, speed: 5 }], { start: '19:00' })).problems).toBeUndefined()
     const night = build(profile(), walk([{ minutes: 360 }, { minutes: 360 }, { minutes: 360 }, { minutes: 360 }, { minutes: 360 }])).problems
-    expect(night[0].problem).toMatch(/minutes of cardio/)
+    expect(night[0].problem).toMatch(/timed minutes/)
   })
 
   it('minutes on an exercise that is not cardio are refused, as the config sheet offers no cardio there', () => {
@@ -540,6 +540,24 @@ describe('found in review, cardio round 1', () => {
   it('a missing set among cardio sets is a problem, not a crash', () => {
     const r = build(profile(), walk([{ minutes: 20, speed: 5 }, null]))
     expect(r.problems[0]).toMatchObject({ field: 'exercises[0].sets[1]' })
+  })
+})
+
+describe('found in review, cardio round 2', () => {
+  it('holds count too: an hour on the treadmill and five 1-minute planks is a 65-minute session', () => {
+    const input = { date: '2026-10-18', exercises: [{ exercise: '3666', sets: [{ minutes: 60, speed: 5 }] }, { exercise: '0463', sets: Array.from({ length: 5 }, () => ({ seconds: 60 })) }] }
+    const w = build(profile(), input).workout
+    expect(w.end - w.start).toBe(65 * 60000)
+    expect(build(profile(), { ...input, durationMin: 60 }).problems[0]).toMatchObject({ field: 'durationMin' })
+  })
+
+  it('reaching back to fit the cardio never crosses the start of the session it followed', () => {
+    const S = profile({ workouts: [{ ...bench(TODAY, 80), start: NOW - 55 * 60000, end: NOW - 45 * 60000 }] })
+    const r = build(S, { date: TODAY, exercises: [{ exercise: 'stationary bike', sets: [{ minutes: 60, speed: 25 }] }] })
+    expect(r.problems[0]).toMatchObject({ field: 'start' })
+    // 50 minutes still begin after that session began: filed after it, overlapping its end.
+    const w = build(S, { date: TODAY, exercises: [{ exercise: 'stationary bike', sets: [{ minutes: 50, speed: 25 }] }] }).workout
+    expect(w.start).toBe(NOW - 50 * 60000)
   })
 })
 
