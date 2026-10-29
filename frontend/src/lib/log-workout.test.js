@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
-import { buildLoggedWorkout, appendLoggedWorkout, resolveExercise, findDuplicate } from './log-workout.js'
-import { setLabel, workoutVolume, setsDone } from './history.js'
+import { buildLoggedWorkout, appendLoggedWorkout, previewLoggedWorkout, resolveExercise, findDuplicate } from './log-workout.js'
+import { setLabel, workoutVolume, setsDone, modeOf } from './history.js'
+import { exerciseHistory } from './exercise-history.js'
 import { best1RM } from './onerm.js'
 import { mergeStates, stampChange } from './sync-merge.js'
 
@@ -77,10 +78,6 @@ describe('what the user said becomes the workout Finish would have saved', () =>
     expect(told.customEx[0].bp).toBe('back')
   })
 
-  it('cardio is refused rather than stored as a rep set at zero speed', () => {
-    const r = build(profile(), { date: TODAY, exercises: [{ exercise: 'treadmill running', sets: [{ reps: 1 }] }] })
-    expect(r.problems).toBeDefined()
-  })
 })
 
 describe('the numbers', () => {
@@ -283,9 +280,12 @@ describe('found in review', () => {
     expect(build(profile(), { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 5 }] }] }).workout.entries[0].muscleSnapshot).toBeUndefined()
   })
 
-  it('a new custom exercise filed under cardio is refused like built-in cardio', () => {
+  it('a new custom exercise filed under cardio takes rep sets as reps, not as "0 min @ 0 km/h"', () => {
     const r = build(profile(), { date: TODAY, exercises: [{ exercise: 'Frobnicator', createCustom: true, bodyPart: 'cardio', sets: [{ reps: 8 }] }] })
-    expect(r.problems[0].problem).toMatch(/cardio/)
+    expect(r.problems).toBeUndefined()
+    const e = r.workout.entries[0]
+    expect(e.target.mode).toBe('reps')
+    expect(setLabel(e.id, e.sets[0], e.target)).toBe('0×8')
   })
 })
 
@@ -378,3 +378,132 @@ describe('found in review, round 3', () => {
     expect(S.workouts[1].prs).toEqual([])
   })
 })
+
+const walk = (sets, over = {}) => ({ date: TODAY, exercises: [{ exercise: 'treadmill walk', sets }], ...over })
+const row0 = r => r.workout.entries[0].sets[0]
+
+describe('cardio: minutes at a speed, the row the app stores', () => {
+  it('"20 min treadmill walk at 5.6 km/h, incline 7": one native cardio row, no volume, no badge', () => {
+    const r = build(profile(), walk([{ minutes: 20, speed: 5.6, incline: 7 }]))
+    expect(r.problems).toBeUndefined()
+    const e = r.workout.entries[0]
+    expect(e.id).toBe('3666')
+    expect(e.sets).toEqual([{ min: 20, speed: 5.6, incline: 7, done: true }])
+    expect(e.target).toEqual({ id: '3666', mode: 'cardio' })
+    expect(modeOf(e.target)).toBe('cardio')
+    expect(setLabel(e.id, e.sets[0], e.target, 'kmh')).toBe('20 min @ 5.6 km/h · 7% incline')
+    expect(r.workout.vol).toBe(0)
+    expect(r.resolved[0].mode).toBe('cardio')
+    const S = profile()
+    const added = appendLoggedWorkout(S, r, { now: NOW })
+    expect(added.workout.prs).toEqual([])
+    expect(S.exWeights).toEqual({})
+    const h = exerciseHistory(S, '3666')
+    expect(h.metric).toBe('min')
+  })
+
+  it('mph into the km/h the app stores; a pound profile that never chose reads mph, a kilo one km/h', () => {
+    expect(row0(build(profile(), walk([{ minutes: 20, speed: 3.5 }], { speedUnit: 'mph' }))).speed).toBe(5.63)
+    expect(row0(build(profile({ unit: 'lb' }), walk([{ minutes: 20, speed: 3.5 }]))).speed).toBe(5.63)
+    expect(row0(build(profile(), walk([{ minutes: 20, speed: 5.6 }]))).speed).toBe(5.6)
+    expect(row0(build(profile({ unit: 'lb', speedUnit: 'kmh' }), walk([{ minutes: 20, speed: 5.6 }]))).speed).toBe(5.6)
+    // The caller's frozen unit (the first read) wins over the profile as it is now.
+    expect(row0(buildLoggedWorkout(profile({ unit: 'lb' }), walk([{ minutes: 20, speed: 5.6 }]), { now: NOW, speedUnit: 'kmh' })).speed).toBe(5.6)
+    // A weight unit in the description says nothing about the speed's.
+    expect(row0(build(profile({ unit: 'lb' }), walk([{ minutes: 20, speed: 3.5 }], { unit: 'kg' }))).speed).toBe(5.63)
+    expect(build(profile(), walk([{ minutes: 20, speed: 3 }], { speedUnit: 'knots' })).problems[0].field).toBe('speedUnit')
+  })
+
+  it('a distance instead of a speed becomes the average speed; both at once is a question', () => {
+    expect(row0(build(profile(), walk([{ minutes: 30, distance: 2.5 }]))).speed).toBe(5)
+    expect(row0(build(profile(), walk([{ minutes: 30, distance: 1.5 }], { speedUnit: 'mph' }))).speed).toBe(4.83)
+    expect(build(profile(), walk([{ minutes: 30, distance: 2.5, speed: 5 }])).problems[0].problem).toMatch(/not both/)
+    expect(build(profile(), walk([{ minutes: 30, distance: 0 }])).problems[0].problem).toMatch(/distance/)
+  })
+
+  it('minutes are required and whole; no speed is stored as 0; a bike-beating speed is a unit mix-up', () => {
+    expect(row0(build(profile(), walk([{ minutes: 20 }])))).toEqual({ min: 20, speed: 0, done: true })
+    for (const minutes of [0, 361, 12.5]) expect(build(profile(), walk([{ minutes }])).problems[0].problem).toMatch(/minutes/)
+    expect(build(profile(), walk([{ speed: 5, incline: 3 }])).problems[0].problem).toMatch(/minutes/)
+    expect(build(profile(), walk([{ minutes: 20, speed: 61 }])).problems[0].problem).toMatch(/60 km\/h/)
+    expect(build(profile(), walk([{ minutes: 20, speed: 38 }], { speedUnit: 'mph' })).problems[0].problem).toMatch(/60 km\/h/)
+  })
+
+  it('the grade lands on the half percent, flat leaves no key, and a bike has none', () => {
+    expect(row0(build(profile(), walk([{ minutes: 20, speed: 5, incline: 7.3 }]))).incline).toBe(7.5)
+    expect(row0(build(profile(), walk([{ minutes: 20, speed: 5, incline: 0 }])))).toEqual({ min: 20, speed: 5, done: true })
+    expect(build(profile(), walk([{ minutes: 20, speed: 5, incline: 41 }])).problems[0].problem).toMatch(/incline/)
+    const bike = build(profile(), { date: TODAY, exercises: [{ exercise: 'stationary bike', sets: [{ minutes: 30, speed: 25, incline: 3 }] }] })
+    expect(bike.problems[0].problem).toMatch(/no incline/)
+    expect(build(profile(), { date: TODAY, exercises: [{ exercise: 'stationary bike', sets: [{ minutes: 30, speed: 25 }] }] }).problems).toBeUndefined()
+    const own = { id: 'c9', n: 'Hill path', custom: true, eq: 'custom', bp: 'cardio', tg: 'cardiovascular system', desc: '' }
+    expect(row0(build(profile({ customEx: [own] }), { date: TODAY, exercises: [{ exercise: 'c9', sets: [{ minutes: 40, speed: 5, incline: 8 }] }] })).incline).toBe(8)
+  })
+
+  it('RPE rides on a cardio set; weight, RIR, failure and a warm-up do not, all reported at once', () => {
+    expect(row0(build(profile(), walk([{ minutes: 20, speed: 5, rpe: 7 }]))).rpe).toBe(7)
+    const r = build(profile(), walk([{ minutes: 20, weight: 10 }, { minutes: 20, rir: 2 }, { minutes: 20, failure: true }, { minutes: 20, warmup: true }]))
+    expect(r.problems.map(p => p.field)).toEqual(['exercises[0].sets[0]', 'exercises[0].sets[1]', 'exercises[0].sets[2]', 'exercises[0].sets[3]'])
+    expect(build(profile(), walk([{ minutes: 20, weight: 0 }])).problems).toBeUndefined()
+  })
+
+  it('minutes do not mix with reps or seconds in one exercise', () => {
+    expect(build(profile(), walk([{ minutes: 20 }, { reps: 10 }])).problems[0].problem).toMatch(/not a mix/)
+    expect(build(profile(), walk([{ minutes: 20 }, { seconds: 60 }])).problems[0].problem).toMatch(/not a mix/)
+  })
+
+  it('a cardio exercise counted in reps or seconds says so on its target, the profile\'s own included', () => {
+    const reps = build(profile(), walk([{ reps: 30 }])).workout.entries[0]
+    expect(reps.target).toEqual({ id: '3666', mode: 'reps' })
+    expect(setLabel(reps.id, reps.sets[0], reps.target)).toBe('0×30')
+    const secs = build(profile(), walk([{ seconds: 90 }])).workout.entries[0]
+    expect(secs.target.mode).toBe('time')
+    const own = { id: 'c8', n: 'Skipping', custom: true, eq: 'custom', bp: 'cardio', tg: 'cardiovascular system', desc: '' }
+    const e = build(profile({ customEx: [own] }), { date: TODAY, exercises: [{ exercise: 'c8', sets: [{ reps: 100 }] }] }).workout.entries[0]
+    expect(e.target.mode).toBe('reps')
+    // A lift stays exactly as it was stored before cardio could be logged.
+    expect(build(profile(), curls()).workout.entries[0].target.mode).toBeUndefined()
+  })
+
+  it('a mixed session: the lift earns its badge and confirmed weight, the walk nothing, volume is the lift\'s', () => {
+    const S = profile()
+    const r = build(S, { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 100 }] }, { exercise: '3666', sets: [{ minutes: 20, speed: 5 }] }] })
+    expect(r.workout.vol).toBe(500)
+    const added = appendLoggedWorkout(S, r, { now: NOW })
+    expect(added.workout.prs).toEqual(['0025'])
+    expect(Object.keys(S.exWeights)).toEqual(['0025'])
+  })
+
+  it('the same walk twice is one workout; another speed, grade or unit is another request', () => {
+    const a = build(profile(), walk([{ minutes: 20, speed: 5, incline: 7 }])).workout.id
+    expect(build(profile(), walk([{ minutes: 20, speed: 5, incline: 7 }])).workout.id).toBe(a)
+    expect(build(profile(), walk([{ minutes: 20, speed: 5.5, incline: 7 }])).workout.id).not.toBe(a)
+    expect(build(profile(), walk([{ minutes: 20, speed: 5, incline: 8 }])).workout.id).not.toBe(a)
+    expect(build(profile(), walk([{ minutes: 20, speed: 5, incline: 7 }], { speedUnit: 'mph' })).workout.id).not.toBe(a)
+    // A lifting description keeps the id it had before cardio existed: a retry across versions.
+    expect(build(profile(), curls()).workout.id).toBe('mwe0qrmj72ea')
+  })
+})
+
+describe('a dry run shows the badges the save will give', () => {
+  it('today: a heavier bench is a PR in the preview and in the filed workout, and S is untouched', () => {
+    const S = profile({ workouts: [bench('2026-10-13', 90, ['0025'])] })
+    const before = clone(S)
+    const r = build(S, { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 100 }] }] })
+    expect(r.workout.prs).toEqual([])
+    const preview = previewLoggedWorkout(S, r, { now: NOW })
+    expect(preview.prs).toEqual(['0025'])
+    expect(S).toEqual(before)
+    expect(appendLoggedWorkout(S, r, { now: NOW }).workout.prs).toEqual(preview.prs)
+  })
+
+  it('a backfill: the preview holds badges against the history around it, as the save does', () => {
+    const S = profile({ workouts: [bench('2026-10-13', 90, ['0025']), bench('2026-10-18', 95, ['0025'])] })
+    const r = build(S, { date: '2026-10-15', exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 92.5 }] }] })
+    const preview = previewLoggedWorkout(S, r, { now: NOW })
+    const saved = appendLoggedWorkout(clone(S), r, { now: NOW }).workout
+    expect(preview.prs).toEqual(saved.prs)
+    expect(preview.prs).toEqual(['0025'])
+  })
+})
+
