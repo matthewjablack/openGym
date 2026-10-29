@@ -26,6 +26,7 @@ import { insertChronological, backfillStart } from './backfill.js'
 import { rebuildPrHistory } from './workout-date.js'
 import { stampWorkout } from './sync-merge.js'
 import { exerciseMuscleSnapshot } from './muscles.js'
+import { repSetMs } from './fit-export.js'
 import { speedUnitOf, fromSpeed, KMH_PER_MPH } from './speed.js'
 import { clampIncline, inclineFits, INCLINE_MAX } from './incline.js'
 
@@ -265,12 +266,18 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
     resolved.push({ input: ex.exercise, id: hit.id, name: hit.name, mode, ...(target.dbLoad ? { weightMeans: target.dbLoad } : {}), ...(hit.created ? { created: true } : {}) })
   })
   // The session holds at least the minutes it was timed for, cardio and holds alike: a 120-minute
-  // walk is not filed in the default hour, which the FIT export (scaling every timed set into the
-  // session) would then compress into a walk at twice the speed.
-  const workMin = Math.ceil(entries.reduce((n, e) => n + e.sets.reduce((m, s) =>
-    m + (e.target.mode === 'cardio' ? s.min : e.target.mode === 'time' ? s.sec / 60 : 0), 0), 0))
-  if (workMin > LOG_LIMITS.maxDurationMin) problems.push({ field: 'exercises', problem: `more than ${LOG_LIMITS.maxDurationMin} timed minutes (cardio and holds) in one session` })
-  else if (dur != null && workMin > dur) problems.push({ field: 'durationMin', problem: `shorter than the ${workMin} timed minutes (cardio and holds) in it` })
+  // walk is not filed in the default hour, which the FIT export (scaling every set into the
+  // session) would then compress into a walk at twice the speed. A length the caller gave only has
+  // to hold the timed minutes; one filled in also holds the time the export gives each rep set,
+  // so an hour's walk beside ten bench sets is not exported as 55 minutes.
+  const timedMin = entries.reduce((n, e) => n + e.sets.reduce((m, s) =>
+    m + (e.target.mode === 'cardio' ? s.min : e.target.mode === 'time' ? s.sec / 60 : 0), 0), 0)
+  const repMin = entries.reduce((n, e) => n + (e.target.mode === 'cardio' || e.target.mode === 'time' ? 0
+    : e.sets.reduce((m, s) => m + repSetMs(s.r) / 60000, 0)), 0)
+  const workMin = timedMin > 0 ? Math.ceil(timedMin + repMin) : 0
+  const timedText = `${Math.round(timedMin * 10) / 10} timed minutes (cardio and holds)`
+  if (timedMin > LOG_LIMITS.maxDurationMin) problems.push({ field: 'exercises', problem: `more than ${LOG_LIMITS.maxDurationMin} timed minutes (cardio and holds) in one session` })
+  else if (dur != null && timedMin > dur) problems.push({ field: 'durationMin', problem: `shorter than the ${timedText} in it` })
   if (problems.length) return { problems }
 
   const past = date < today
@@ -310,7 +317,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
       // start, though: that would file it before the session it followed, as a backfill.
       if (end - start < workMin * 60000) {
         start = end - workMin * 60000
-        if (start <= lastStart) return { problems: [{ field: 'start', problem: `${workMin} timed minutes ending now would begin before today's last session did: give the start (and length) it really had` }] }
+        if (start <= lastStart) return { problems: [{ field: 'start', problem: `${timedText} ending now would begin before today's last session did: give the start (and length) it really had` }] }
       }
       if (start < midnight) return { problems: [{ field: 'durationMin', problem: 'that much timed work ending now began yesterday: give the date and start it began on' }] }
     }
@@ -319,7 +326,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
   // As the app's own backfill refuses one (sheets.jsx endsInFuture): a finished session that has
   // not finished yet would count its whole length into the stats now.
   if (end > now) return { problems: [{ field: 'durationMin', problem: 'the session would end later than now' }] }
-  if (end - start < workMin * 60000) return { problems: [{ field: 'start', problem: `the ${workMin} timed minutes from that start would end later than now` }] }
+  if (end - start < timedMin * 60000) return { problems: [{ field: 'start', problem: `the ${timedText} from that start would end later than now` }] }
 
   const name = String(input.name ?? '').trim().slice(0, 80) || 'Workout'
   const note = String(input.note ?? '').trim().slice(0, 500)
@@ -410,10 +417,14 @@ export function appendLoggedWorkout(S, built, { now = Date.now(), allowDuplicate
 }
 
 /**
- * The workout as appendLoggedWorkout would file it into `S` — its PR badges included, which are
- * only decided at filing, against the history around it — without touching `S`. A dry run shows
- * this, so it cannot promise fewer badges (or more) than the save that follows.
+ * What a save of `built` would do to `S`, without touching it: { workout } as appendLoggedWorkout
+ * would file it — its PR badges included, which are only decided at filing, against the history
+ * around it — or, when the save would add nothing because it is a duplicate, { workout, duplicateOf }
+ * with the description itself (not the copy on file, which an edit in the app may have changed).
+ * A dry run shows this, so it cannot promise fewer badges (or more) than the save that follows.
  */
-export function previewLoggedWorkout(S, built, { now = Date.now() } = {}) {
-  return appendLoggedWorkout(JSON.parse(JSON.stringify(S)), built, { now, allowDuplicate: true }).workout
+export function previewLoggedWorkout(S, built, { now = Date.now(), allowDuplicate = false } = {}) {
+  const dup = findDuplicate(S, built.workout)
+  if (dup && (dup.sameRequest || !allowDuplicate)) return { workout: built.workout, duplicateOf: dup.workout.id }
+  return { workout: appendLoggedWorkout(JSON.parse(JSON.stringify(S)), built, { now, allowDuplicate: true }).workout }
 }

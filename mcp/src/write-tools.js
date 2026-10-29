@@ -11,7 +11,7 @@ import { z } from 'zod'
 import { isoDate, entryView, withCustomsIndexed } from './tools.js'
 import { localUid, invalidate } from './state.js'
 import { apiConfig, apiFetch } from './api-client.js'
-import { buildLoggedWorkout, appendLoggedWorkout, previewLoggedWorkout, findDuplicate, BODY_PARTS, LOG_LIMITS } from '../../frontend/src/lib/log-workout.js'
+import { buildLoggedWorkout, appendLoggedWorkout, previewLoggedWorkout, BODY_PARTS, LOG_LIMITS } from '../../frontend/src/lib/log-workout.js'
 import { speedUnitOf, toSpeed, speedLabel } from '../../frontend/src/lib/speed.js'
 import { INCLINE_MAX } from '../../frontend/src/lib/incline.js'
 import { friendlyDuration } from './labels.js'
@@ -195,13 +195,11 @@ export const logWorkout = {
       // What each dumbbell weight meant on the first read stays what it means on a retry.
       meanings = meanings || Object.fromEntries(built.workout.entries.map(e => [e.id, e.target?.dbLoad || 'as']))
       if (params.dry_run) {
-        // Filed into a throw-away copy, so the preview carries the PR badges the save would give.
-        // Nothing would be added for a duplicate: the preview is then the description itself, not
-        // the copy on file (which an edit in the app may since have changed).
-        const dup = findDuplicate(S, built.workout)
-        const refused = dup && (dup.sameRequest || !params.allow_duplicate)
-        const filed = refused ? built.workout : withCustomsIndexed({ customEx: [...(S.customEx || []), ...built.customEx] }, () => previewLoggedWorkout(S, built, { now }))
-        return { logged: false, dry_run: true, would_log: viewOf(filed, S, built), ...(refused ? { duplicate_of: dup.workout.id } : {}) }
+        // Filed into a throw-away copy, so the preview carries the PR badges the save would give;
+        // a duplicate the save would refuse previews as described, with what it repeats.
+        const p = withCustomsIndexed({ customEx: [...(S.customEx || []), ...built.customEx] }, () =>
+          previewLoggedWorkout(S, built, { now, allowDuplicate: params.allow_duplicate === true }))
+        return { logged: false, dry_run: true, would_log: viewOf(p.workout, S, built), ...(p.duplicateOf ? { duplicate_of: p.duplicateOf } : {}) }
       }
       const added = withCustomsIndexed({ customEx: [...(S.customEx || []), ...built.customEx] }, () =>
         appendLoggedWorkout(S, built, { now, allowDuplicate: params.allow_duplicate === true }))

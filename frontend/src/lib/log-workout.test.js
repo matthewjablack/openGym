@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest'
 import { buildLoggedWorkout, appendLoggedWorkout, previewLoggedWorkout, resolveExercise, findDuplicate } from './log-workout.js'
 import { setLabel, workoutVolume, setsDone, modeOf } from './history.js'
 import { exerciseHistory } from './exercise-history.js'
+import { workoutFitMessages } from './fit-export.js'
 import { best1RM } from './onerm.js'
 import { mergeStates, stampChange } from './sync-merge.js'
 
@@ -491,7 +492,7 @@ describe('a dry run shows the badges the save will give', () => {
     const before = clone(S)
     const r = build(S, { date: TODAY, exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 100 }] }] })
     expect(r.workout.prs).toEqual([])
-    const preview = previewLoggedWorkout(S, r, { now: NOW })
+    const preview = previewLoggedWorkout(S, r, { now: NOW }).workout
     expect(preview.prs).toEqual(['0025'])
     expect(S).toEqual(before)
     expect(appendLoggedWorkout(S, r, { now: NOW }).workout.prs).toEqual(preview.prs)
@@ -500,7 +501,7 @@ describe('a dry run shows the badges the save will give', () => {
   it('a backfill: the preview holds badges against the history around it, as the save does', () => {
     const S = profile({ workouts: [bench('2026-10-13', 90, ['0025']), bench('2026-10-18', 95, ['0025'])] })
     const r = build(S, { date: '2026-10-15', exercises: [{ exercise: '0025', sets: [{ reps: 5, weight: 92.5 }] }] })
-    const preview = previewLoggedWorkout(S, r, { now: NOW })
+    const preview = previewLoggedWorkout(S, r, { now: NOW }).workout
     const saved = appendLoggedWorkout(clone(S), r, { now: NOW }).workout
     expect(preview.prs).toEqual(saved.prs)
     expect(preview.prs).toEqual(['0025'])
@@ -558,6 +559,50 @@ describe('found in review, cardio round 2', () => {
     // 50 minutes still begin after that session began: filed after it, overlapping its end.
     const w = build(S, { date: TODAY, exercises: [{ exercise: 'stationary bike', sets: [{ minutes: 50, speed: 25 }] }] }).workout
     expect(w.start).toBe(NOW - 50 * 60000)
+  })
+})
+
+describe('found in review, cardio round 3', () => {
+  // The active set lengths the FIT export writes (set messages, active ones), in seconds.
+  const fitActive = w => workoutFitMessages(w)
+    .filter(m => m.global === 225 && m.fields.find(f => f[0] === 5)[2] === 1)
+    .map(m => Math.round(m.fields.find(f => f[0] === 0)[2] / 1000))
+
+  it('an hour on the treadmill beside ten bench sets keeps its hour in the FIT export', () => {
+    const w = build(profile(), { date: '2026-10-18', exercises: [
+      { exercise: '3666', sets: [{ minutes: 60, speed: 5 }] },
+      { exercise: '0025', sets: Array.from({ length: 10 }, () => ({ reps: 10, weight: 50 })) },
+    ] }).workout
+    expect(w.end - w.start).toBe(65 * 60000)
+    expect(fitActive(w)[0]).toBe(3600)
+    // A lifting session is filed in the hour it always was.
+    const lift = build(profile(), { date: '2026-10-18', exercises: [{ exercise: '0025', sets: Array.from({ length: 30 }, () => ({ reps: 10, weight: 50 })) }] }).workout
+    expect(lift.end - lift.start).toBe(60 * 60000)
+  })
+
+  it('a length that holds the timed work exactly is accepted, fractions and all', () => {
+    expect(build(profile(), { date: '2026-10-18', durationMin: 20.5, exercises: [
+      { exercise: '3666', sets: [{ minutes: 20, speed: 5 }] }, { exercise: '0463', sets: [{ seconds: 30 }] },
+    ] }).problems).toBeUndefined()
+    expect(build(profile(), { date: '2026-10-18', durationMin: 1.5, exercises: [{ exercise: '0463', sets: [{ seconds: 90 }] }] }).problems).toBeUndefined()
+    expect(build(profile(), { date: '2026-10-18', durationMin: 1.4, exercises: [{ exercise: '0463', sets: [{ seconds: 90 }] }] }).problems[0].problem).toMatch(/1\.5 timed minutes/)
+  })
+})
+
+describe('found in review, cardio round 3: the preview of a duplicate', () => {
+  it('a repeated request previews as described, with what it repeats, not the copy edited since', () => {
+    const S = profile()
+    const r = build(S, curls())
+    appendLoggedWorkout(S, r, { now: NOW })
+    S.workouts[0].entries[0].sets[0].w = 99
+    const p = previewLoggedWorkout(S, r, { now: NOW })
+    expect(p.duplicateOf).toBe(r.workout.id)
+    expect(p.workout.entries[0].sets[0].w).toBe(12)
+    // The same sets as a second session the caller vouches for: previewed as filed, no duplicate.
+    S.workouts[0].entries[0].sets[0].w = 12
+    const again = build(S, curls({ name: 'Evening' }))
+    expect(previewLoggedWorkout(S, again, { now: NOW }).duplicateOf).toBeDefined()
+    expect(previewLoggedWorkout(S, again, { now: NOW, allowDuplicate: true }).duplicateOf).toBeUndefined()
   })
 })
 

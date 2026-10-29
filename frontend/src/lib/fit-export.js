@@ -214,6 +214,8 @@ const LB_TO_KG = 0.45359237
 const REP_MS = 3000
 const SET_MIN_MS = 15000
 const SET_MAX_MS = 120000
+/** How long a rep set is taken to last when nothing timed it: 3 s a rep, between 15 s and 2 min. */
+export const repSetMs = reps => Math.min(SET_MAX_MS, Math.max(SET_MIN_MS, (Number(reps) || 0) * REP_MS))
 
 // One FIT "set" per thing that was done: a straight set, each side of a per-side set, and each
 // drop of a drop set (right after its set, with no rest in between).
@@ -230,7 +232,7 @@ function itemsOf(w, exOf) {
       const min = Number(row.min) || 0
       const len = mode === 'cardio' ? min * 60000
         : mode === 'time' ? sec * 1000
-          : Math.min(SET_MAX_MS, Math.max(SET_MIN_MS, reps * REP_MS))
+          : repSetMs(reps)
       if (!(len > 0)) return
       items.push({
         ex, mode, category, len, chained, at: Number.isFinite(at) ? at : null,
