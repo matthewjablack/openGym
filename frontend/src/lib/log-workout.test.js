@@ -625,6 +625,18 @@ describe('found in review, cardio round 4: a given start or length keeps the wal
     }
   })
 
+  it('with two minutes to spare beside the walk, the ten rep sets share them: 12 s each', () => {
+    const secs = fitActive(build(profile(), mixed({ durationMin: 62 })).workout)
+    expect(secs).toEqual([3600, ...Array(10).fill(12)])
+  })
+
+  it('a reach-back needs the exact timed minutes, not a whole minute more', () => {
+    const S = profile({ workouts: [{ ...bench(TODAY, 80), start: NOW - 20.8 * 60000, end: NOW - 20.7 * 60000 }] })
+    const r = build(S, { date: TODAY, exercises: [{ exercise: '3666', sets: [{ minutes: 20, speed: 5 }] }, { exercise: '0463', sets: [{ seconds: 30 }] }] })
+    expect(r.problems).toBeUndefined()
+    expect(r.workout.start).toBeGreaterThan(NOW - 20.8 * 60000)
+  })
+
   it('timed work that overruns the session on its own still shrinks alike, as before', () => {
     const w = { id: 'x', d: TODAY, start: NOW - 30 * 60000, end: NOW, name: 'W', routineIds: [], prs: [],
       entries: [{ id: '3666', target: { id: '3666', mode: 'cardio' }, sets: [{ min: 60, speed: 5, done: true }] },

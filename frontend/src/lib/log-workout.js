@@ -317,7 +317,7 @@ export function buildLoggedWorkout(S, input, { now = Date.now(), unit: fallbackU
       // one's end rather than file 20 minutes of walking in the 5 that are left. Not over its
       // start, though: that would file it before the session it followed, as a backfill.
       // The rep sets' guessed time goes along only when it fits as well.
-      const floorMin = Math.ceil(timedMin)
+      const floorMin = timedMin
       for (const need of workMin > floorMin ? [workMin, floorMin] : [floorMin]) {
         if (end - start >= need * 60000) break
         const reach = end - need * 60000
